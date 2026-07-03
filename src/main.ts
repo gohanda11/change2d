@@ -15,7 +15,6 @@ fileInput.addEventListener('change', (event) => {
   const file = target.files?.[0];
   if (!file) return;
   app.handleFile(file);
-  target.value = '';
 });
 
 exportBtn.addEventListener('click', () => {

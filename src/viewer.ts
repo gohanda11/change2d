@@ -203,7 +203,7 @@ export class Viewer {
   }
 
   private pickBestFace(intersects: THREE.Intersection[]): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
-    const candidates: Array<{ meshIndex: number; faceIndex: number; triangleCount: number; distance: number; normal: THREE.Vector3 }> = [];
+    const candidates: Array<{ meshIndex: number; faceIndex: number; triangleCount: number; distance: number }> = [];
 
     for (const hit of intersects) {
       const meshObject = hit.object as THREE.Mesh;
@@ -213,19 +213,14 @@ export class Viewer {
       const mesh = this.result!.meshes[picked.meshIndex];
       const face = mesh.brep_faces[picked.faceIndex];
       const triangleCount = face.last - face.first + 1;
-      const normal = this.getFaceNormal(mesh, face).applyMatrix3(new THREE.Matrix3().getNormalMatrix(meshObject.matrixWorld));
-      candidates.push({ meshIndex: picked.meshIndex, faceIndex: picked.faceIndex, triangleCount, distance: hit.distance, normal });
+      candidates.push({ meshIndex: picked.meshIndex, faceIndex: picked.faceIndex, triangleCount, distance: hit.distance });
     }
 
     if (candidates.length === 0) return null;
 
-    // Prefer the closest front-facing face (normal points toward the camera).
-    const rayDirection = this.raycaster.ray.direction;
-    const frontFacing = candidates.filter((c) => c.normal.dot(rayDirection) < -0.1);
-    const pool = frontFacing.length > 0 ? frontFacing : candidates;
-
-    pool.sort((a, b) => a.distance - b.distance);
-    const selected = pool[0];
+    // Pick the closest intersected face so back faces remain selectable after rotation.
+    candidates.sort((a, b) => a.distance - b.distance);
+    const selected = candidates[0];
     return { meshIndex: selected.meshIndex, faceIndex: selected.faceIndex, triangleCount: selected.triangleCount };
   }
 
