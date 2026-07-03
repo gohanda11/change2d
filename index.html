@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="./favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STEP to DXF</title>
+    <script type="text/javascript" src="./occt-import-js.js" data-vite-ignore></script>
+  </head>
+  <body>
+    <header>
+      <h1>STEP → DXF</h1>
+      <div class="controls">
+        <input type="file" id="file-input" accept=".step,.stp" />
+        <button id="export-btn" disabled>選択面を DXF 出力</button>
+      </div>
+      <div id="status"></div>
+    </header>
+    <div id="viewer-container"></div>
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
