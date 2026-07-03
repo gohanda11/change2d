@@ -1,11 +1,26 @@
 import Drawing from 'dxf-writer';
+import { detectSegments } from './arcDetector';
 
 export function generateDxf(loops: [number, number][][]): string {
   const d = new Drawing();
   d.setUnits('Millimeters');
   for (const loop of loops) {
     if (loop.length < 2) continue;
-    d.drawPolyline(loop, true);
+    const segments = detectSegments(loop);
+    for (const seg of segments) {
+      if (seg.type === 'arc') {
+        if (seg.isFullCircle) {
+          d.drawCircle(seg.center.x, seg.center.y, seg.radius);
+        } else {
+          const [startAngle, endAngle] = seg.clockwise
+            ? [seg.endAngle, seg.startAngle]
+            : [seg.startAngle, seg.endAngle];
+          d.drawArc(seg.center.x, seg.center.y, seg.radius, startAngle, endAngle);
+        }
+      } else {
+        d.drawLine(seg.start.x, seg.start.y, seg.end.x, seg.end.y);
+      }
+    }
   }
   return d.toDxfString();
 }

@@ -11,8 +11,7 @@ export class Viewer {
   private raycaster: THREE.Raycaster;
   private pointer: THREE.Vector2;
   private modelGroup: THREE.Group;
-  private highlightMesh: THREE.LineSegments | null = null;
-  private highlightFillMesh: THREE.Mesh | null = null;
+  private highlightMesh: THREE.Mesh | null = null;
   private result: OcctResult | null = null;
   private onFaceClickCallback: ((selection: { meshIndex: number; faceIndex: number; triangleCount: number } | null) => void) | null = null;
 
@@ -179,7 +178,7 @@ export class Viewer {
   }
 
   private pickBestFace(intersects: THREE.Intersection[]): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
-    const candidates = new Map<string, { meshIndex: number; faceIndex: number; triangleCount: number; distance: number }>();
+    const candidates: Array<{ meshIndex: number; faceIndex: number; triangleCount: number; distance: number; normal: THREE.Vector3 }> = [];
 
     for (const hit of intersects) {
       const meshObject = hit.object as THREE.Mesh;
@@ -189,22 +188,33 @@ export class Viewer {
       const mesh = this.result!.meshes[picked.meshIndex];
       const face = mesh.brep_faces[picked.faceIndex];
       const triangleCount = face.last - face.first + 1;
-      const key = `${picked.meshIndex}-${picked.faceIndex}`;
-
-      if (!candidates.has(key) || hit.distance < candidates.get(key)!.distance) {
-        candidates.set(key, { meshIndex: picked.meshIndex, faceIndex: picked.faceIndex, triangleCount, distance: hit.distance });
-      }
+      const normal = this.getFaceNormal(mesh, face).applyMatrix3(new THREE.Matrix3().getNormalMatrix(meshObject.matrixWorld));
+      candidates.push({ meshIndex: picked.meshIndex, faceIndex: picked.faceIndex, triangleCount, distance: hit.distance, normal });
     }
 
-    if (candidates.size === 0) return null;
+    if (candidates.length === 0) return null;
 
-    // Prefer the largest face; if multiple faces tie, pick the closest one.
-    const sorted = Array.from(candidates.values()).sort((a, b) => {
-      if (b.triangleCount !== a.triangleCount) return b.triangleCount - a.triangleCount;
-      return a.distance - b.distance;
-    });
+    // Prefer the closest front-facing face (normal points toward the camera).
+    const rayDirection = this.raycaster.ray.direction;
+    const frontFacing = candidates.filter((c) => c.normal.dot(rayDirection) < -0.1);
+    const pool = frontFacing.length > 0 ? frontFacing : candidates;
 
-    return sorted[0];
+    pool.sort((a, b) => a.distance - b.distance);
+    const selected = pool[0];
+    return { meshIndex: selected.meshIndex, faceIndex: selected.faceIndex, triangleCount: selected.triangleCount };
+  }
+
+  private getFaceNormal(mesh: OcctMesh, face: import('./types').OcctBrepFace): THREE.Vector3 {
+    const i0 = mesh.index.array[face.first * 3];
+    const i1 = mesh.index.array[face.first * 3 + 1];
+    const i2 = mesh.index.array[face.first * 3 + 2];
+    const p0 = this.getVertex(mesh, i0);
+    const p1 = this.getVertex(mesh, i1);
+    const p2 = this.getVertex(mesh, i2);
+    return new THREE.Vector3().crossVectors(
+      new THREE.Vector3().subVectors(p1, p0),
+      new THREE.Vector3().subVectors(p2, p0)
+    ).normalize();
   }
 
   highlightFace(meshIndex: number, faceIndex: number, result: OcctResult): void {
@@ -226,34 +236,26 @@ export class Viewer {
       const base = positions.length / 3;
       positions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
       indices.push(base, base + 1, base + 2);
-
-      // wireframe edges
-      positions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
-      positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
-      positions.push(p2.x, p2.y, p2.z, p0.x, p0.y, p0.z);
     }
 
-    const lineGeometry = new THREE.BufferGeometry();
-    lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const geometry = new THREE.BufferGeometry();
+    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    geometry.setIndex(indices);
+    geometry.computeVertexNormals();
 
-    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2, depthTest: false });
-    this.highlightMesh = new THREE.LineSegments(lineGeometry, lineMaterial);
-    this.highlightMesh.renderOrder = 999;
-    this.modelGroup.add(this.highlightMesh);
-
-    const fillGeometry = new THREE.BufferGeometry();
-    fillGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions.slice(0, (face.last - face.first + 1) * 9), 3));
-    fillGeometry.setIndex(indices);
-    const fillMaterial = new THREE.MeshBasicMaterial({
-      color: 0xffff00,
+    const offset = this.getFaceNormal(mesh, face).multiplyScalar(0.05);
+    const material = new THREE.MeshBasicMaterial({
+      color: 0xffaa00,
       transparent: true,
-      opacity: 0.25,
+      opacity: 0.6,
       side: THREE.DoubleSide,
       depthTest: false,
     });
-    this.highlightFillMesh = new THREE.Mesh(fillGeometry, fillMaterial);
-    this.highlightFillMesh.renderOrder = 998;
-    this.modelGroup.add(this.highlightFillMesh);
+
+    this.highlightMesh = new THREE.Mesh(geometry, material);
+    this.highlightMesh.position.copy(offset);
+    this.highlightMesh.renderOrder = 998;
+    this.modelGroup.add(this.highlightMesh);
   }
 
   private getVertex(mesh: OcctMesh, index: number): THREE.Vector3 {
@@ -267,12 +269,6 @@ export class Viewer {
       this.highlightMesh.geometry.dispose();
       (this.highlightMesh.material as THREE.Material).dispose();
       this.highlightMesh = null;
-    }
-    if (this.highlightFillMesh) {
-      this.modelGroup.remove(this.highlightFillMesh);
-      this.highlightFillMesh.geometry.dispose();
-      (this.highlightFillMesh.material as THREE.Material).dispose();
-      this.highlightFillMesh = null;
     }
   }
 }
