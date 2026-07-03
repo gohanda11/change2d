@@ -280,7 +280,7 @@ export class Viewer {
 
   highlightSelection(meshIndex: number, faceIndex: number, result: OcctResult): void {
     this.clearSelectionHighlight();
-    this.selectedMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0xffaa00, 0.6);
+    this.selectedMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0xffaa00);
     this.overlayGroup.add(this.selectedMesh);
   }
 
@@ -289,7 +289,7 @@ export class Viewer {
       return; // already highlighted as selection
     }
     this.clearHoverHighlight();
-    this.hoverMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0x00ccff, 0.35);
+    this.hoverMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0x00ccff);
     this.overlayGroup.add(this.hoverMesh);
   }
 
@@ -297,8 +297,7 @@ export class Viewer {
     meshIndex: number,
     faceIndex: number,
     result: OcctResult,
-    color: number,
-    opacity: number
+    color: number
   ): THREE.Mesh {
     const mesh = result.meshes[meshIndex];
     const face = mesh.brep_faces[faceIndex];
@@ -326,8 +325,8 @@ export class Viewer {
     const offset = this.getFaceNormal(mesh, face).multiplyScalar(0.05);
     const material = new THREE.MeshBasicMaterial({
       color,
-      transparent: true,
-      opacity,
+      transparent: false,
+      opacity: 1,
       side: THREE.DoubleSide,
       depthTest: false,
     });
