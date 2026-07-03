@@ -36,7 +36,6 @@ describe('detectSegments', () => {
       loop.push([Math.cos(angle), Math.sin(angle)]);
     }
     loop.push([0, 0]);
-    loop.push([1, 0]);
 
     const segments = detectSegments(loop);
     const arc = segments.find((s) => s.type === 'arc');

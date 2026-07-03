@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js';
-import type { OcctResult, OcctMesh } from './types';
+import type { OcctResult, OcctMesh, OcctBrepFace } from './types';
 import { pickBrepFace } from './faceSelector';
 
 export class Viewer {
@@ -11,7 +11,10 @@ export class Viewer {
   private raycaster: THREE.Raycaster;
   private pointer: THREE.Vector2;
   private modelGroup: THREE.Group;
-  private highlightMesh: THREE.Mesh | null = null;
+  private gridHelper: THREE.GridHelper;
+  private axesHelper: THREE.AxesHelper;
+  private selectedMesh: THREE.Mesh | null = null;
+  private hoverMesh: THREE.Mesh | null = null;
   private result: OcctResult | null = null;
   private onFaceClickCallback: ((selection: { meshIndex: number; faceIndex: number; triangleCount: number } | null) => void) | null = null;
 
@@ -42,8 +45,10 @@ export class Viewer {
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
 
-    this.scene.add(new THREE.GridHelper(100, 20, 0x555555, 0x333333));
-    this.scene.add(new THREE.AxesHelper(10));
+    this.gridHelper = new THREE.GridHelper(100, 20, 0x555555, 0x333333);
+    this.scene.add(this.gridHelper);
+    this.axesHelper = new THREE.AxesHelper(10);
+    this.scene.add(this.axesHelper);
 
     const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
     this.scene.add(ambientLight);
@@ -54,7 +59,8 @@ export class Viewer {
     this.animate();
 
     window.addEventListener('resize', () => this.onWindowResize());
-    this.renderer.domElement.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.renderer.domElement.addEventListener('click', (e) => this.onClick(e));
+    this.renderer.domElement.addEventListener('pointermove', (e) => this.onPointerMove(e));
   }
 
   private onWindowResize(): void {
@@ -129,6 +135,11 @@ export class Viewer {
     this.camera.lookAt(center);
     this.controls.target.copy(center);
     this.controls.update();
+
+    // Keep grid and axes centered on the model so they are not left at the origin.
+    this.gridHelper.position.copy(center);
+    this.gridHelper.position.y = center.y;
+    this.axesHelper.position.copy(center);
   }
 
   private clearModel(): void {
@@ -150,31 +161,45 @@ export class Viewer {
     this.onFaceClickCallback = callback;
   }
 
-  private onPointerDown(event: PointerEvent): void {
+  private onClick(event: MouseEvent): void {
     if (!this.result) return;
 
-    const rect = this.renderer.domElement.getBoundingClientRect();
-    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
-    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
-
-    this.raycaster.setFromCamera(this.pointer, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.modelGroup.children, false);
-
-    if (intersects.length === 0) {
-      this.clearHighlight();
-      this.onFaceClickCallback?.(null);
-      return;
-    }
-
-    const selection = this.pickBestFace(intersects);
+    this.updatePointer(event);
+    const selection = this.raycastFace();
 
     if (selection) {
-      this.highlightFace(selection.meshIndex, selection.faceIndex, this.result);
+      this.highlightSelection(selection.meshIndex, selection.faceIndex, this.result);
     } else {
-      this.clearHighlight();
+      this.clearSelectionHighlight();
     }
 
     this.onFaceClickCallback?.(selection);
+  }
+
+  private onPointerMove(event: PointerEvent): void {
+    if (!this.result) return;
+
+    this.updatePointer(event);
+    const selection = this.raycastFace();
+
+    if (selection) {
+      this.highlightHover(selection.meshIndex, selection.faceIndex, this.result);
+    } else {
+      this.clearHoverHighlight();
+    }
+  }
+
+  private updatePointer(event: MouseEvent): void {
+    const rect = this.renderer.domElement.getBoundingClientRect();
+    this.pointer.x = ((event.clientX - rect.left) / rect.width) * 2 - 1;
+    this.pointer.y = -((event.clientY - rect.top) / rect.height) * 2 + 1;
+  }
+
+  private raycastFace(): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
+    this.raycaster.setFromCamera(this.pointer, this.camera);
+    const intersects = this.raycaster.intersectObjects(this.modelGroup.children, false);
+    if (intersects.length === 0) return null;
+    return this.pickBestFace(intersects);
   }
 
   private pickBestFace(intersects: THREE.Intersection[]): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
@@ -204,7 +229,7 @@ export class Viewer {
     return { meshIndex: selected.meshIndex, faceIndex: selected.faceIndex, triangleCount: selected.triangleCount };
   }
 
-  private getFaceNormal(mesh: OcctMesh, face: import('./types').OcctBrepFace): THREE.Vector3 {
+  private getFaceNormal(mesh: OcctMesh, face: OcctBrepFace): THREE.Vector3 {
     const i0 = mesh.index.array[face.first * 3];
     const i1 = mesh.index.array[face.first * 3 + 1];
     const i2 = mesh.index.array[face.first * 3 + 2];
@@ -217,9 +242,28 @@ export class Viewer {
     ).normalize();
   }
 
-  highlightFace(meshIndex: number, faceIndex: number, result: OcctResult): void {
-    this.clearHighlight();
+  highlightSelection(meshIndex: number, faceIndex: number, result: OcctResult): void {
+    this.clearSelectionHighlight();
+    this.selectedMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0xffaa00, 0.6);
+    this.modelGroup.add(this.selectedMesh);
+  }
 
+  highlightHover(meshIndex: number, faceIndex: number, result: OcctResult): void {
+    if (this.selectedMesh && this.selectedMesh.userData.meshIndex === meshIndex && this.selectedMesh.userData.faceIndex === faceIndex) {
+      return; // already highlighted as selection
+    }
+    this.clearHoverHighlight();
+    this.hoverMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0x00ccff, 0.35);
+    this.modelGroup.add(this.hoverMesh);
+  }
+
+  private createFaceMesh(
+    meshIndex: number,
+    faceIndex: number,
+    result: OcctResult,
+    color: number,
+    opacity: number
+  ): THREE.Mesh {
     const mesh = result.meshes[meshIndex];
     const face = mesh.brep_faces[faceIndex];
     const positions: number[] = [];
@@ -245,17 +289,18 @@ export class Viewer {
 
     const offset = this.getFaceNormal(mesh, face).multiplyScalar(0.05);
     const material = new THREE.MeshBasicMaterial({
-      color: 0xffaa00,
+      color,
       transparent: true,
-      opacity: 0.6,
+      opacity,
       side: THREE.DoubleSide,
       depthTest: false,
     });
 
-    this.highlightMesh = new THREE.Mesh(geometry, material);
-    this.highlightMesh.position.copy(offset);
-    this.highlightMesh.renderOrder = 998;
-    this.modelGroup.add(this.highlightMesh);
+    const highlightMesh = new THREE.Mesh(geometry, material);
+    highlightMesh.position.copy(offset);
+    highlightMesh.renderOrder = 998;
+    highlightMesh.userData = { meshIndex, faceIndex };
+    return highlightMesh;
   }
 
   private getVertex(mesh: OcctMesh, index: number): THREE.Vector3 {
@@ -264,11 +309,25 @@ export class Viewer {
   }
 
   clearHighlight(): void {
-    if (this.highlightMesh) {
-      this.modelGroup.remove(this.highlightMesh);
-      this.highlightMesh.geometry.dispose();
-      (this.highlightMesh.material as THREE.Material).dispose();
-      this.highlightMesh = null;
+    this.clearSelectionHighlight();
+    this.clearHoverHighlight();
+  }
+
+  private clearSelectionHighlight(): void {
+    if (this.selectedMesh) {
+      this.modelGroup.remove(this.selectedMesh);
+      this.selectedMesh.geometry.dispose();
+      (this.selectedMesh.material as THREE.Material).dispose();
+      this.selectedMesh = null;
+    }
+  }
+
+  private clearHoverHighlight(): void {
+    if (this.hoverMesh) {
+      this.modelGroup.remove(this.hoverMesh);
+      this.hoverMesh.geometry.dispose();
+      (this.hoverMesh.material as THREE.Material).dispose();
+      this.hoverMesh = null;
     }
   }
 }

@@ -66,6 +66,30 @@ function unwrapDelta(current: number, previous: number): number {
   return delta;
 }
 
+function collinearWithLine(pStart: Point2D, pEnd: Point2D, p3: Point2D, tolerance: number): boolean {
+  const dx = pEnd.x - pStart.x;
+  const dy = pEnd.y - pStart.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-10) return false;
+  const cross = Math.abs(dx * (p3.y - pStart.y) - dy * (p3.x - pStart.x));
+  return cross <= tolerance * len;
+}
+
+function findLineEnd(points: Point2D[], start: number, tolerance: number): number {
+  const n = points.length;
+  if (n < 3) return start + 1;
+
+  let end = start + 2;
+  while (end - start < n) {
+    const pStart = points[start % n];
+    const pEnd = points[(end - 1) % n];
+    const p3 = points[end % n];
+    if (!collinearWithLine(pStart, pEnd, p3, tolerance)) break;
+    end++;
+  }
+  return end;
+}
+
 function findArcEnd(points: Point2D[], start: number, tolerance: number): number {
   const n = points.length;
   if (n < 3) return start + 1;
@@ -135,9 +159,17 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
   const midDelta = unwrapDelta(angleOf(midPoint, circle.center), startAngle);
   const clockwise = midDelta < 0;
 
-  const accumulated = unwrapDelta(endAngle, startAngle);
+  // Compute total angular span by walking through all arc points.
+  let accumulated = 0;
+  let prev = startAngle;
+  for (let k = start + 1; k < end; k++) {
+    const angle = angleOf(points[k % n], circle.center);
+    accumulated += unwrapDelta(angle, prev);
+    prev = angle;
+  }
+
   const isFullCircle =
-    Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || count >= n - 1;
+    Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || end % n === start % n;
 
   return {
     type: 'arc',
@@ -175,16 +207,21 @@ export function detectSegments(loop: [number, number][]): Segment[] {
       if (arc) {
         segments.push(arc);
         if (arc.isFullCircle) break;
-        edgesConsumed += arcCount;
-        i = arcEnd % n;
+        edgesConsumed += arcCount - 1;
+        i = (arcEnd - 1) % n;
         continue;
       }
     }
 
-    const j = (i + 1) % n;
-    segments.push({ type: 'line', start: points[i], end: points[j] });
-    edgesConsumed += 1;
-    i = j;
+    const lineEnd = findLineEnd(points, i, CIRCLE_TOLERANCE);
+    const lineCount = lineEnd - i;
+    segments.push({
+      type: 'line',
+      start: points[i % n],
+      end: points[(lineEnd - 1) % n],
+    });
+    edgesConsumed += lineCount - 1;
+    i = (lineEnd - 1) % n;
   }
 
   return segments;
