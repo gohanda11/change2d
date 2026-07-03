@@ -9,8 +9,8 @@ export function pickBrepFace(
   const meshIndex = meshObject.userData.meshIndex as number;
   if (meshIndex === undefined || !result.meshes[meshIndex]) return null;
 
-  // faceIndexFromRaycaster は index バッファ内の最初の頂点オフセット
-  const triangleIndex = Math.floor(faceIndexFromRaycaster / 3);
+  // faceIndexFromRaycaster は Three.js Raycaster が返す三角形インデックス（indexed geometry では index 属性の開始位置 / 3）
+  const triangleIndex = faceIndexFromRaycaster;
   const mesh = result.meshes[meshIndex];
   const faceIdx = mesh.brep_faces.findIndex(
     f => triangleIndex >= f.first && triangleIndex <= f.last

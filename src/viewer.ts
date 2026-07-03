@@ -12,8 +12,9 @@ export class Viewer {
   private pointer: THREE.Vector2;
   private modelGroup: THREE.Group;
   private highlightMesh: THREE.LineSegments | null = null;
+  private highlightFillMesh: THREE.Mesh | null = null;
   private result: OcctResult | null = null;
-  private onFaceClickCallback: ((selection: { meshIndex: number; faceIndex: number } | null) => void) | null = null;
+  private onFaceClickCallback: ((selection: { meshIndex: number; faceIndex: number; triangleCount: number } | null) => void) | null = null;
 
   private container: HTMLElement;
 
@@ -114,7 +115,18 @@ export class Viewer {
     const maxDim = Math.max(size.x, size.y, size.z);
     const distance = maxDim * 1.5 || 10;
 
-    this.camera.position.set(center.x + distance, center.y + distance, center.z + distance);
+    // Position the camera along the shortest dimension so the largest face is front-facing.
+    const minDim = Math.min(size.x, size.y, size.z);
+    const cameraPos = center.clone();
+    if (minDim === size.x) {
+      cameraPos.x += distance;
+    } else if (minDim === size.y) {
+      cameraPos.y += distance;
+    } else {
+      cameraPos.z += distance;
+    }
+
+    this.camera.position.copy(cameraPos);
     this.camera.lookAt(center);
     this.controls.target.copy(center);
     this.controls.update();
@@ -135,7 +147,7 @@ export class Viewer {
     }
   }
 
-  onFaceClick(callback: (selection: { meshIndex: number; faceIndex: number } | null) => void): void {
+  onFaceClick(callback: (selection: { meshIndex: number; faceIndex: number; triangleCount: number } | null) => void): void {
     this.onFaceClickCallback = callback;
   }
 
@@ -155,9 +167,7 @@ export class Viewer {
       return;
     }
 
-    const hit = intersects[0];
-    const meshObject = hit.object as THREE.Mesh;
-    const selection = pickBrepFace(this.result, meshObject, hit.faceIndex ?? 0);
+    const selection = this.pickBestFace(intersects);
 
     if (selection) {
       this.highlightFace(selection.meshIndex, selection.faceIndex, this.result);
@@ -168,12 +178,42 @@ export class Viewer {
     this.onFaceClickCallback?.(selection);
   }
 
+  private pickBestFace(intersects: THREE.Intersection[]): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
+    const candidates = new Map<string, { meshIndex: number; faceIndex: number; triangleCount: number; distance: number }>();
+
+    for (const hit of intersects) {
+      const meshObject = hit.object as THREE.Mesh;
+      const picked = pickBrepFace(this.result!, meshObject, hit.faceIndex ?? 0);
+      if (!picked) continue;
+
+      const mesh = this.result!.meshes[picked.meshIndex];
+      const face = mesh.brep_faces[picked.faceIndex];
+      const triangleCount = face.last - face.first + 1;
+      const key = `${picked.meshIndex}-${picked.faceIndex}`;
+
+      if (!candidates.has(key) || hit.distance < candidates.get(key)!.distance) {
+        candidates.set(key, { meshIndex: picked.meshIndex, faceIndex: picked.faceIndex, triangleCount, distance: hit.distance });
+      }
+    }
+
+    if (candidates.size === 0) return null;
+
+    // Prefer the largest face; if multiple faces tie, pick the closest one.
+    const sorted = Array.from(candidates.values()).sort((a, b) => {
+      if (b.triangleCount !== a.triangleCount) return b.triangleCount - a.triangleCount;
+      return a.distance - b.distance;
+    });
+
+    return sorted[0];
+  }
+
   highlightFace(meshIndex: number, faceIndex: number, result: OcctResult): void {
     this.clearHighlight();
 
     const mesh = result.meshes[meshIndex];
     const face = mesh.brep_faces[faceIndex];
     const positions: number[] = [];
+    const indices: number[] = [];
 
     for (let t = face.first; t <= face.last; t++) {
       const i0 = mesh.index.array[t * 3];
@@ -182,17 +222,38 @@ export class Viewer {
       const p0 = this.getVertex(mesh, i0);
       const p1 = this.getVertex(mesh, i1);
       const p2 = this.getVertex(mesh, i2);
+
+      const base = positions.length / 3;
+      positions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
+      indices.push(base, base + 1, base + 2);
+
+      // wireframe edges
       positions.push(p0.x, p0.y, p0.z, p1.x, p1.y, p1.z);
       positions.push(p1.x, p1.y, p1.z, p2.x, p2.y, p2.z);
       positions.push(p2.x, p2.y, p2.z, p0.x, p0.y, p0.z);
     }
 
-    const geometry = new THREE.BufferGeometry();
-    geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
+    const lineGeometry = new THREE.BufferGeometry();
+    lineGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3));
 
-    const material = new THREE.LineBasicMaterial({ color: 0x00ff00, linewidth: 2 });
-    this.highlightMesh = new THREE.LineSegments(geometry, material);
+    const lineMaterial = new THREE.LineBasicMaterial({ color: 0xffff00, linewidth: 2, depthTest: false });
+    this.highlightMesh = new THREE.LineSegments(lineGeometry, lineMaterial);
+    this.highlightMesh.renderOrder = 999;
     this.modelGroup.add(this.highlightMesh);
+
+    const fillGeometry = new THREE.BufferGeometry();
+    fillGeometry.setAttribute('position', new THREE.Float32BufferAttribute(positions.slice(0, (face.last - face.first + 1) * 9), 3));
+    fillGeometry.setIndex(indices);
+    const fillMaterial = new THREE.MeshBasicMaterial({
+      color: 0xffff00,
+      transparent: true,
+      opacity: 0.25,
+      side: THREE.DoubleSide,
+      depthTest: false,
+    });
+    this.highlightFillMesh = new THREE.Mesh(fillGeometry, fillMaterial);
+    this.highlightFillMesh.renderOrder = 998;
+    this.modelGroup.add(this.highlightFillMesh);
   }
 
   private getVertex(mesh: OcctMesh, index: number): THREE.Vector3 {
@@ -206,6 +267,12 @@ export class Viewer {
       this.highlightMesh.geometry.dispose();
       (this.highlightMesh.material as THREE.Material).dispose();
       this.highlightMesh = null;
+    }
+    if (this.highlightFillMesh) {
+      this.modelGroup.remove(this.highlightFillMesh);
+      this.highlightFillMesh.geometry.dispose();
+      (this.highlightFillMesh.material as THREE.Material).dispose();
+      this.highlightFillMesh = null;
     }
   }
 }

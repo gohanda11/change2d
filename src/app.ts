@@ -7,6 +7,7 @@ import { Viewer } from './viewer';
 export class App {
   private result: OcctResult | null = null;
   private selectedFace: SelectedFace | null = null;
+  private currentFileName: string | null = null;
   private viewer: Viewer;
   private statusEl: HTMLElement;
   private exportBtn: HTMLButtonElement;
@@ -29,6 +30,7 @@ export class App {
     this.setStatus('STEP ファイルを読み込み中...');
     this.exportBtn.disabled = true;
     this.selectedFace = null;
+    this.currentFileName = file.name;
 
     try {
       this.result = await loadStepFile(file);
@@ -36,17 +38,18 @@ export class App {
       this.setStatus(`読み込み完了: ${this.result.meshes.length} メッシュ`);
     } catch (err) {
       this.result = null;
+      this.currentFileName = null;
       this.viewer.clearHighlight();
       const message = err instanceof Error ? err.message : '不明なエラー';
       this.setStatus(`エラー: ${message}`);
     }
   }
 
-  handleFaceSelection(selection: SelectedFace | null): void {
+  handleFaceSelection(selection: (SelectedFace & { triangleCount: number }) | null): void {
     this.selectedFace = selection;
     if (selection) {
       this.exportBtn.disabled = false;
-      this.setStatus(`面を選択: mesh ${selection.meshIndex}, face ${selection.faceIndex}`);
+      this.setStatus(`面を選択: mesh ${selection.meshIndex}, face ${selection.faceIndex} (${selection.triangleCount.toLocaleString()} 三角形)`);
     } else {
       this.exportBtn.disabled = true;
       this.setStatus('面が選択されていません');
@@ -66,7 +69,8 @@ export class App {
         return;
       }
       const dxf = generateDxf(loops);
-      downloadDxf(dxf, 'selected-face.dxf');
+      const baseName = this.currentFileName?.replace(/\.step$/i, '').replace(/\.stp$/i, '') ?? 'selected-face';
+      downloadDxf(dxf, `${baseName}.dxf`);
       this.setStatus('DXF をダウンロードしました');
     } catch (err) {
       const message = err instanceof Error ? err.message : '不明なエラー';
