@@ -328,7 +328,8 @@ export class Viewer {
       transparent: false,
       opacity: 1,
       side: THREE.DoubleSide,
-      depthTest: false,
+      depthTest: true,
+      depthWrite: false,
     });
 
     const highlightMesh = new THREE.Mesh(geometry, material);
