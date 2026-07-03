@@ -11,12 +11,18 @@ export class Viewer {
   private raycaster: THREE.Raycaster;
   private pointer: THREE.Vector2;
   private modelGroup: THREE.Group;
+  private meshGroup: THREE.Group;
+  private overlayGroup: THREE.Group;
   private gridHelper: THREE.GridHelper;
   private axesHelper: THREE.AxesHelper;
   private selectedMesh: THREE.Mesh | null = null;
   private hoverMesh: THREE.Mesh | null = null;
   private result: OcctResult | null = null;
   private onFaceClickCallback: ((selection: { meshIndex: number; faceIndex: number; triangleCount: number } | null) => void) | null = null;
+
+  private pointerDownClient: { x: number; y: number } | null = null;
+  private suppressNextClick = false;
+  private readonly dragThresholdPx = 3;
 
   private container: HTMLElement;
 
@@ -45,6 +51,11 @@ export class Viewer {
     this.modelGroup = new THREE.Group();
     this.scene.add(this.modelGroup);
 
+    this.meshGroup = new THREE.Group();
+    this.modelGroup.add(this.meshGroup);
+    this.overlayGroup = new THREE.Group();
+    this.modelGroup.add(this.overlayGroup);
+
     this.gridHelper = new THREE.GridHelper(100, 20, 0x555555, 0x333333);
     this.scene.add(this.gridHelper);
     this.axesHelper = new THREE.AxesHelper(10);
@@ -61,6 +72,9 @@ export class Viewer {
     window.addEventListener('resize', () => this.onWindowResize());
     this.renderer.domElement.addEventListener('click', (e) => this.onClick(e));
     this.renderer.domElement.addEventListener('pointermove', (e) => this.onPointerMove(e));
+    this.renderer.domElement.addEventListener('pointerdown', (e) => this.onPointerDown(e));
+    this.renderer.domElement.addEventListener('pointerup', () => this.onPointerUp());
+    this.renderer.domElement.addEventListener('pointercancel', () => this.onPointerCancel());
   }
 
   private onWindowResize(): void {
@@ -85,7 +99,7 @@ export class Viewer {
     for (let i = 0; i < result.meshes.length; i++) {
       const mesh = result.meshes[i];
       const threeMesh = this.createThreeMesh(mesh, i);
-      this.modelGroup.add(threeMesh);
+      this.meshGroup.add(threeMesh);
     }
 
     this.fitCameraToModel();
@@ -143,9 +157,9 @@ export class Viewer {
   }
 
   private clearModel(): void {
-    while (this.modelGroup.children.length > 0) {
-      const child = this.modelGroup.children[0];
-      this.modelGroup.remove(child);
+    while (this.meshGroup.children.length > 0) {
+      const child = this.meshGroup.children[0];
+      this.meshGroup.remove(child);
       if (child instanceof THREE.Mesh) {
         child.geometry.dispose();
         if (Array.isArray(child.material)) {
@@ -164,6 +178,11 @@ export class Viewer {
   private onClick(event: MouseEvent): void {
     if (!this.result) return;
 
+    if (this.suppressNextClick) {
+      this.suppressNextClick = false;
+      return;
+    }
+
     this.updatePointer(event);
     const selection = this.raycastFace();
 
@@ -176,8 +195,30 @@ export class Viewer {
     this.onFaceClickCallback?.(selection);
   }
 
+  private onPointerDown(event: PointerEvent): void {
+    this.pointerDownClient = { x: event.clientX, y: event.clientY };
+    this.suppressNextClick = false;
+  }
+
+  private onPointerUp(): void {
+    this.pointerDownClient = null;
+  }
+
+  private onPointerCancel(): void {
+    this.pointerDownClient = null;
+  }
+
   private onPointerMove(event: PointerEvent): void {
     if (!this.result) return;
+
+    if (this.pointerDownClient) {
+      const dx = Math.abs(event.clientX - this.pointerDownClient.x);
+      const dy = Math.abs(event.clientY - this.pointerDownClient.y);
+      if (dx > this.dragThresholdPx || dy > this.dragThresholdPx) {
+        this.suppressNextClick = true;
+        return;
+      }
+    }
 
     this.updatePointer(event);
     const selection = this.raycastFace();
@@ -197,7 +238,7 @@ export class Viewer {
 
   private raycastFace(): { meshIndex: number; faceIndex: number; triangleCount: number } | null {
     this.raycaster.setFromCamera(this.pointer, this.camera);
-    const intersects = this.raycaster.intersectObjects(this.modelGroup.children, false);
+    const intersects = this.raycaster.intersectObjects(this.meshGroup.children, false);
     if (intersects.length === 0) return null;
     return this.pickBestFace(intersects);
   }
@@ -240,7 +281,7 @@ export class Viewer {
   highlightSelection(meshIndex: number, faceIndex: number, result: OcctResult): void {
     this.clearSelectionHighlight();
     this.selectedMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0xffaa00, 0.6);
-    this.modelGroup.add(this.selectedMesh);
+    this.overlayGroup.add(this.selectedMesh);
   }
 
   highlightHover(meshIndex: number, faceIndex: number, result: OcctResult): void {
@@ -249,7 +290,7 @@ export class Viewer {
     }
     this.clearHoverHighlight();
     this.hoverMesh = this.createFaceMesh(meshIndex, faceIndex, result, 0x00ccff, 0.35);
-    this.modelGroup.add(this.hoverMesh);
+    this.overlayGroup.add(this.hoverMesh);
   }
 
   private createFaceMesh(
@@ -310,7 +351,7 @@ export class Viewer {
 
   private clearSelectionHighlight(): void {
     if (this.selectedMesh) {
-      this.modelGroup.remove(this.selectedMesh);
+      this.overlayGroup.remove(this.selectedMesh);
       this.selectedMesh.geometry.dispose();
       (this.selectedMesh.material as THREE.Material).dispose();
       this.selectedMesh = null;
@@ -319,7 +360,7 @@ export class Viewer {
 
   private clearHoverHighlight(): void {
     if (this.hoverMesh) {
-      this.modelGroup.remove(this.hoverMesh);
+      this.overlayGroup.remove(this.hoverMesh);
       this.hoverMesh.geometry.dispose();
       (this.hoverMesh.material as THREE.Material).dispose();
       this.hoverMesh = null;
