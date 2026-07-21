@@ -17,6 +17,7 @@
   "dependencies": {
     "@types/three": "^0.185.0",
     "dxf-writer": "^1.18.4",
+    "jspdf": "^4.2.1",
     "occt-import-js": "^0.0.23",
     "three": "^0.185.1"
   }

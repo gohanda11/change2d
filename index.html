@@ -13,10 +13,33 @@
       <div class="controls">
         <input type="file" id="file-input" accept=".step,.stp" />
         <button id="export-btn" disabled>選択面を DXF 出力</button>
+        <button id="drawing-btn" disabled>選択面を 2D図面出力</button>
       </div>
       <div id="status"></div>
     </header>
     <div id="viewer-container"></div>
+
+    <div id="drawing-modal" class="hidden" aria-hidden="true">
+      <div class="drawing-toolbar">
+        <div class="drawing-tools">
+          <button type="button" data-tool="dimension" class="active">直線寸法</button>
+          <button type="button" data-tool="diameter">直径</button>
+          <button type="button" data-tool="text">テキスト</button>
+          <button type="button" data-tool="pan">パン</button>
+          <button type="button" id="drawing-hatch-btn">斜線: OFF</button>
+          <button type="button" id="drawing-clear-btn">注釈クリア</button>
+        </div>
+        <div class="drawing-actions">
+          <span id="drawing-hint"></span>
+          <button type="button" id="drawing-save-btn" class="primary">PDF保存</button>
+          <button type="button" id="drawing-close-btn">閉じる</button>
+        </div>
+      </div>
+      <div class="drawing-canvas-wrap">
+        <canvas id="drawing-canvas"></canvas>
+      </div>
+    </div>
+
     <script type="module" src="./src/main.ts"></script>
   </body>
 </html>

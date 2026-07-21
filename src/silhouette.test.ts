@@ -74,3 +74,47 @@ describe('extractFaceLoops2D', () => {
     }
   });
 });
+
+describe('computeFaceBasis orientation', () => {
+  it('orients top/bottom faces toward the viewer (not 180° flipped)', async () => {
+    const { computeFaceBasis } = await import('./silhouette');
+    const mesh = createCubeMesh();
+
+    // z=10 face (back in fixture) has outward-ish +Z depending on winding.
+    // Use explicit +Z / -Z triangles via existing faces:
+    const z0 = mesh.brep_faces[0]; // z=0
+    const z10 = mesh.brep_faces[1]; // z=10
+
+    const basisZ0 = computeFaceBasis(mesh, z0);
+    const basisZ10 = computeFaceBasis(mesh, z10);
+
+    // right-handed: u × v should align with normal
+    const cross = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) => ({
+      x: a.y * b.z - a.z * b.y,
+      y: a.z * b.x - a.x * b.z,
+      z: a.x * b.y - a.y * b.x,
+    });
+    const dot = (a: { x: number; y: number; z: number }, b: { x: number; y: number; z: number }) =>
+      a.x * b.x + a.y * b.y + a.z * b.z;
+
+    for (const b of [basisZ0, basisZ10]) {
+      const uv = cross(b.u, b.v);
+      expect(dot(uv, b.normal)).toBeGreaterThan(0.9);
+    }
+
+    // Camera convention with worldUp≈Y for ±Z normals:
+    // +Z normal => u≈+X, v≈+Y
+    // -Z normal => u≈-X, v≈+Y
+    if (basisZ10.normal.z > 0.5) {
+      expect(basisZ10.u.x).toBeGreaterThan(0.9);
+      expect(basisZ10.v.y).toBeGreaterThan(0.9);
+    }
+    if (basisZ0.normal.z < -0.5) {
+      expect(basisZ0.u.x).toBeLessThan(-0.9);
+      expect(basisZ0.v.y).toBeGreaterThan(0.9);
+    } else if (basisZ0.normal.z > 0.5) {
+      expect(basisZ0.u.x).toBeGreaterThan(0.9);
+      expect(basisZ0.v.y).toBeGreaterThan(0.9);
+    }
+  });
+});

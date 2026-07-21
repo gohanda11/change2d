@@ -38,7 +38,8 @@ function triangleNormal(a: Vec3, b: Vec3, c: Vec3): Vec3 {
   return normalize(cross(sub(b, a), sub(c, a)));
 }
 
-function computeFaceBasis(mesh: OcctMesh, face: OcctBrepFace): {
+/** 面を正面から見るカメラ基準の直交基底（法線が視線逆方向＝手前） */
+export function computeFaceBasis(mesh: OcctMesh, face: OcctBrepFace): {
   origin: Vec3;
   normal: Vec3;
   u: Vec3;
@@ -57,8 +58,15 @@ function computeFaceBasis(mesh: OcctMesh, face: OcctBrepFace): {
     nx += n.x; ny += n.y; nz += n.z;
   }
   const normal = normalize({ x: nx, y: ny, z: nz });
-  const worldUp = Math.abs(normal.z) < 0.99 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
-  const u = normalize(cross(normal, worldUp));
+  // 画面上方向の参考軸（法線とほぼ平行なら別軸を使う）
+  const worldUp =
+    Math.abs(normal.z) < 0.99 ? { x: 0, y: 0, z: 1 } : { x: 0, y: 1, z: 0 };
+  // 右手系・面法線が視聴者側: right = up × normal, viewUp = normal × right
+  let u = normalize(cross(worldUp, normal));
+  if (len(u) < 1e-8) {
+    const altUp = Math.abs(normal.x) < 0.9 ? { x: 1, y: 0, z: 0 } : { x: 0, y: 1, z: 0 };
+    u = normalize(cross(altUp, normal));
+  }
   const v = normalize(cross(normal, u));
   const origin = getVec3(positions, mesh.index.array[face.first * 3]);
   return { origin, normal, u, v };
