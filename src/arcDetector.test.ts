@@ -129,4 +129,53 @@ describe('detectSegments', () => {
       expect(sweep).toBeGreaterThan(60);
     }
   });
+
+  it('rejects oversized corner fillets that should be sharp corners', () => {
+    // R=30 on a 14mm square is not a real key-cutout fillet
+    const w = 14;
+    const r = 30;
+    const pts: [number, number][] = [];
+    const addArc = (cx: number, cy: number, a0: number, a1: number) => {
+      for (let i = 1; i <= 16; i++) {
+        const a = a0 + ((a1 - a0) * i) / 16;
+        pts.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+      }
+    };
+    pts.push([0, 0]);
+    // pretend only one corner has huge R geometry in the mesh
+    pts.push([w - 0.01, 0]);
+    addArc(w - r, r, -Math.PI / 2, 0);
+    pts.push([w, w]);
+    pts.push([0, w]);
+    const segments = detectSegments(pts);
+    const huge = segments.filter((s) => s.type === 'arc' && s.radius > 12);
+    expect(huge.length).toBe(0);
+  });
+
+  it('keeps small real fillets (R<=2)', () => {
+    const loop = roundedRect(20, 10, 1.2, 14);
+    const arcs = detectSegments(loop).filter((s) => s.type === 'arc');
+    expect(arcs.length).toBeGreaterThanOrEqual(4);
+    for (const a of arcs) {
+      if (a.type !== 'arc') continue;
+      expect(a.radius).toBeLessThan(3);
+      expect(Math.abs(a.sweepDegrees)).toBeGreaterThan(50);
+      expect(Math.abs(a.sweepDegrees)).toBeLessThan(130);
+    }
+  });
+
+  it('exports CW fillet as short DXF arc not 270deg', () => {
+    const loop = roundedRect(20, 10, 1.5, 12).reverse();
+    const arcs = detectSegments(loop).filter((s) => s.type === 'arc');
+    expect(arcs.length).toBeGreaterThanOrEqual(1);
+    for (const a of arcs) {
+      if (a.type !== 'arc') continue;
+      const { startAngle, endAngle } = toDxfArcAngles(a);
+      let sweep = endAngle - startAngle;
+      while (sweep <= 0) sweep += 360;
+      expect(sweep).toBeLessThan(180);
+      expect(Math.abs(sweep - Math.abs(a.sweepDegrees))).toBeLessThan(25);
+    }
+  });
+
 });

@@ -31,6 +31,10 @@ const MAX_ARC_STEP_RAD = (30 * Math.PI) / 180;
 const FULL_CIRCLE_THRESHOLD = 2 * Math.PI - 0.05;
 /** これより大きい半径は直線扱い（mm） */
 const ABSURD_RADIUS = 10000;
+/** 部分円弧（フィレット等）として許す最大半径。これ超は直線近似 */
+const MAX_PARTIAL_ARC_RADIUS = 12;
+/** 弦長に対する半径の上限倍率（ゆるい巨大Rを落とす） */
+const MAX_RADIUS_TO_CHORD = 2.5;
 /** 円より直線の方が良く当てはまるときの判定倍率 */
 const LINE_VS_CIRCLE_RATIO = 1.25;
 
@@ -107,8 +111,8 @@ function maxDistToCircle(
 }
 
 /**
- * ほぼ直線な点列を巨大Rの弧として誤検出しない。
- * ※ 弧の始点付近だけ見ると sagitta が小さいので、十分な点数／角度で判定する。
+ * ほぼ直線／直角の角を巨大Rの弧として誤検出しない。
+ * キーボードプレートでは部分円弧のRは小さい（フィレット程度）想定。
  */
 function prefersLineOverCircle(
   points: Point2D[],
@@ -121,26 +125,36 @@ function prefersLineOverCircle(
   const count = end - start;
   if (count < MIN_ARC_POINTS) return true;
 
+  const absSweep = Math.abs(sweepRad);
+  const n = points.length;
+  const a = points[start % n];
+  const b = points[(end - 1) % n];
+  const chord = Math.hypot(b.x - a.x, b.y - a.y);
   const lineDev = maxDistToLine(points, start, end);
   const circleDev = maxDistToCircle(points, start, end, circle);
 
-  // メッシュ公差内で直線なら弧にしない
-  if (lineDev <= CIRCLE_TOLERANCE) return true;
+  // メッシュ公差〜ノイズ程度なら直線
+  if (lineDev <= Math.max(CIRCLE_TOLERANCE * 3, 0.05)) return true;
 
-  // スイープが小さいのに直線偏差も小さい = 平坦な巨大R
-  if (Math.abs(sweepRad) < (20 * Math.PI) / 180 && lineDev < Math.max(0.15, circle.radius * 0.01)) {
-    return true;
-  }
+  // フル円以外で大きすぎるRは直線群へ（角の誤検出防止）
+  if (circle.radius > MAX_PARTIAL_ARC_RADIUS) return true;
+
+  // 平坦すぎる弧（小さなスイープ）
+  if (absSweep < (35 * Math.PI) / 180) return true;
+
+  // 弦に対してRが大きすぎる = ゆるい円弧の誤検出
+  if (chord > 1e-9 && circle.radius > chord * MAX_RADIUS_TO_CHORD) return true;
 
   // 直線フィットが円と同程度以上に良い
   if (lineDev <= circleDev * LINE_VS_CIRCLE_RATIO) return true;
 
-  const n = points.length;
-  const chord = Math.hypot(
-    points[(end - 1) % n].x - points[start % n].x,
-    points[(end - 1) % n].y - points[start % n].y
-  );
-  if (chord > 1e-9 && circle.radius > chord * 10 && lineDev < 0.25) return true;
+  // サジッタが小さすぎる（目視では直線）
+  const sagitta =
+    circle.radius > 1e-9
+      ? circle.radius * (1 - Math.cos(Math.min(absSweep, Math.PI) / 2))
+      : 0;
+  if (sagitta < 0.08) return true;
+
   return false;
 }
 
@@ -181,6 +195,8 @@ function findArcEnd(points: Point2D[], start: number, tolerance: number): number
   const circle = fitCircle3(p1, p2, p3);
   if (!circle) return start + 2;
   if (!Number.isFinite(circle.radius) || circle.radius > ABSURD_RADIUS) return start + 2;
+  // 探索段階では少し緩め（フル円の穴を潰さない）。部分弧の最終判定は fitArc 側。
+  if (circle.radius > MAX_PARTIAL_ARC_RADIUS * 8) return start + 2;
 
   let end = start + 3;
   let prevAngle = angleOf(p3, circle.center);
@@ -238,13 +254,16 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
     prev = angle;
   }
 
-  if (prefersLineOverCircle(points, start, end, circle, accumulated)) return null;
+  const isFullCircle =
+    Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || end % n === start % n;
+
+  // フル円（穴など）は大きなRでも残す。部分弧だけ厳しく落とす。
+  if (!isFullCircle && prefersLineOverCircle(points, start, end, circle, accumulated)) {
+    return null;
+  }
 
   const clockwise = accumulated < 0;
   const sweepDegrees = (accumulated * 180) / Math.PI;
-
-  const isFullCircle =
-    Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || end % n === start % n;
 
   return {
     type: 'arc',
@@ -303,10 +322,44 @@ export function detectSegments(loop: [number, number][]): Segment[] {
   return segments;
 }
 
-/** DXF ARC は常に CCW。時計回りの弧は角度を入れ替えて同じ軌跡にする */
+function normalizeDeg(deg: number): number {
+  let d = deg % 360;
+  if (d < 0) d += 360;
+  return d;
+}
+
+function ccwSweepDeg(start: number, end: number): number {
+  let s = normalizeDeg(end) - normalizeDeg(start);
+  if (s <= 0) s += 360;
+  return s;
+}
+
+function angleOnCcwArc(start: number, end: number, mid: number): boolean {
+  const s = normalizeDeg(start);
+  const e = normalizeDeg(end);
+  const m = normalizeDeg(mid);
+  if (s <= e) return m >= s && m <= e;
+  return m >= s || m <= e;
+}
+
+/** DXF ARC は常に CCW。点列の中点角度が載る側を選んで長弧化を防ぐ */
 export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle: number } {
-  if (seg.clockwise) {
-    return { startAngle: seg.endAngle, endAngle: seg.startAngle };
-  }
-  return { startAngle: seg.startAngle, endAngle: seg.endAngle };
+  const start = normalizeDeg(seg.startAngle);
+  const end = normalizeDeg(seg.endAngle);
+  const mid = normalizeDeg(seg.startAngle + seg.sweepDegrees / 2);
+  const absSweep = Math.min(Math.abs(seg.sweepDegrees), 360);
+
+  const direct = { startAngle: start, endAngle: end };
+  const swapped = { startAngle: end, endAngle: start };
+
+  const directOk = angleOnCcwArc(direct.startAngle, direct.endAngle, mid);
+  const swappedOk = angleOnCcwArc(swapped.startAngle, swapped.endAngle, mid);
+
+  if (directOk && !swappedOk) return direct;
+  if (swappedOk && !directOk) return swapped;
+
+  // 両方 or どちらでもないときは、|sweep| に近い CCW スイープを選ぶ
+  const d1 = Math.abs(ccwSweepDeg(direct.startAngle, direct.endAngle) - absSweep);
+  const d2 = Math.abs(ccwSweepDeg(swapped.startAngle, swapped.endAngle) - absSweep);
+  return d1 <= d2 ? direct : swapped;
 }
