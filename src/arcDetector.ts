@@ -111,6 +111,44 @@ function maxDistToCircle(
   return max;
 }
 
+
+/** 折れ線の曲がりが一頂点に集中している = シャープな L 字角（フィレットではない） */
+function sharpCornerReason(
+  points: Point2D[],
+  start: number,
+  end: number
+): string | null {
+  const n = points.length;
+  const count = end - start;
+  if (count < 4) return null;
+
+  const significantTurns: number[] = [];
+  let total = 0;
+  for (let k = start + 1; k < end - 1; k++) {
+    const a = points[(k - 1 + n) % n];
+    const b = points[k % n];
+    const c = points[(k + 1) % n];
+    const ang1 = Math.atan2(b.y - a.y, b.x - a.x);
+    const ang2 = Math.atan2(c.y - b.y, c.x - b.x);
+    let d = ang2 - ang1;
+    while (d > Math.PI) d -= 2 * Math.PI;
+    while (d < -Math.PI) d += 2 * Math.PI;
+    const abs = Math.abs(d);
+    if (abs < (5 * Math.PI) / 180) continue; // ノイズは無視
+    significantTurns.push(abs);
+    total += abs;
+  }
+  if (significantTurns.length === 0 || total < 1e-6) return null;
+
+  const maxTurn = Math.max(...significantTurns);
+  const concentration = maxTurn / total;
+  // 1箇所で ~55°以上曲がり、全体の過半がそこに集中 → シャープ角
+  if (maxTurn > (55 * Math.PI) / 180 && concentration > 0.55) {
+    return `sharp_corner_turn(${((maxTurn * 180) / Math.PI).toFixed(1)}deg,conc=${concentration.toFixed(2)})`;
+  }
+  return null;
+}
+
 /**
  * ほぼ直線／直角の角を巨大Rの弧として誤検出しない。
  * キーボードプレートでは部分円弧のRは小さい（フィレット程度）想定。
@@ -128,6 +166,9 @@ function linePreferenceReason(
   }
   const count = end - start;
   if (count < MIN_ARC_POINTS) return 'too_few_points';
+
+  const sharp = sharpCornerReason(points, start, end);
+  if (sharp) return sharp;
 
   const absSweep = Math.abs(sweepRad);
   const n = points.length;
@@ -404,7 +445,7 @@ function angleOnCcwArc(start: number, end: number, mid: number): boolean {
   return m >= s || m <= e;
 }
 
-/** DXF ARC は常に CCW。点列の中点角度が載る側を選んで長弧化を防ぐ */
+/** DXF ARC は常に CCW。中点側を選び、モデルが短弧なら DXF も短弧に強制する */
 export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle: number } {
   const start = normalizeDeg(seg.startAngle);
   const end = normalizeDeg(seg.endAngle);
@@ -414,14 +455,35 @@ export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle:
   const direct = { startAngle: start, endAngle: end };
   const swapped = { startAngle: end, endAngle: start };
 
-  const directOk = angleOnCcwArc(direct.startAngle, direct.endAngle, mid);
-  const swappedOk = angleOnCcwArc(swapped.startAngle, swapped.endAngle, mid);
+  const score = (c: { startAngle: number; endAngle: number }): number => {
+    const sw = ccwSweepDeg(c.startAngle, c.endAngle);
+    let s = Math.abs(sw - absSweep);
+    if (!angleOnCcwArc(c.startAngle, c.endAngle, mid)) s += 1000;
+    // モデルが短弧（<=180）なのに DXF が長弧になる候補は大きく減点
+    if (absSweep <= 180 && sw > 180) s += 500;
+    return s;
+  };
 
-  if (directOk && !swappedOk) return direct;
-  if (swappedOk && !directOk) return swapped;
+  let best = score(direct) <= score(swapped) ? direct : swapped;
+  let sw = ccwSweepDeg(best.startAngle, best.endAngle);
 
-  // 両方 or どちらでもないときは、|sweep| に近い CCW スイープを選ぶ
-  const d1 = Math.abs(ccwSweepDeg(direct.startAngle, direct.endAngle) - absSweep);
-  const d2 = Math.abs(ccwSweepDeg(swapped.startAngle, swapped.endAngle) - absSweep);
-  return d1 <= d2 ? direct : swapped;
+  // 最終安全策: モデル短弧なのに長弧なら反転して短弧化
+  if (absSweep <= 180 + 1e-6 && sw > 180) {
+    best = { startAngle: best.endAngle, endAngle: best.startAngle };
+    sw = ccwSweepDeg(best.startAngle, best.endAngle);
+  }
+
+  // それでも長弧なら、開始角から |sweep| だけ CCW で組む
+  if (absSweep <= 180 + 1e-6 && sw > 180) {
+    if (seg.clockwise) {
+      // CW start→end の短弧 = CCW end→start
+      return { startAngle: end, endAngle: start };
+    }
+    return {
+      startAngle: start,
+      endAngle: normalizeDeg(start + absSweep),
+    };
+  }
+
+  return best;
 }

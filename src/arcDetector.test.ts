@@ -178,4 +178,52 @@ describe('detectSegments', () => {
     }
   });
 
+
+  it('keeps tessellated sharp rectangle corners as lines (not tiny arcs)', () => {
+    const w = 20;
+    const h = 12;
+    const dens = 25;
+    const loop: [number, number][] = [];
+    for (let i = 0; i < dens; i++) loop.push([(w * i) / dens, 0]);
+    for (let i = 0; i < dens; i++) loop.push([w, (h * i) / dens]);
+    for (let i = 0; i < dens; i++) loop.push([w - (w * i) / dens, h]);
+    for (let i = 0; i < dens; i++) loop.push([0, h - (h * i) / dens]);
+    const segments = detectSegments(loop);
+    const arcs = segments.filter((s) => s.type === 'arc');
+    expect(arcs.length).toBe(0);
+    expect(segments.every((s) => s.type === 'line')).toBe(true);
+  });
+
+  it('does not convert a dense L-corner into an arc', () => {
+    const pts: [number, number][] = [];
+    for (let i = 0; i <= 30; i++) pts.push([i * 0.4, 0]);
+    for (let i = 1; i <= 30; i++) pts.push([12, i * 0.4]);
+    pts.push([0, 12]);
+    const segments = detectSegments(pts);
+    const cornerArcs = segments.filter(
+      (s) => s.type === 'arc' && !s.isFullCircle && Math.abs(s.sweepDegrees) > 40
+    );
+    expect(cornerArcs.length).toBe(0);
+  });
+
+  it('forces DXF short arc even if start/end would take the long way', () => {
+    const fake = {
+      type: 'arc' as const,
+      center: { x: 0, y: 0 },
+      radius: 1,
+      startAngle: 0,
+      endAngle: 90,
+      startPoint: { x: 1, y: 0 },
+      endPoint: { x: 0, y: 1 },
+      clockwise: true, // model walked CW, sweep -90
+      isFullCircle: false,
+      sweepDegrees: -90,
+    };
+    const { startAngle, endAngle } = toDxfArcAngles(fake);
+    let sweep = endAngle - startAngle;
+    while (sweep <= 0) sweep += 360;
+    expect(sweep).toBeLessThanOrEqual(180);
+    expect(sweep).toBeCloseTo(90, 5);
+  });
+
 });
