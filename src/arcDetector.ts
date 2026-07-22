@@ -13,6 +13,8 @@ export interface ArcSegment {
   endPoint: Point2D;
   clockwise: boolean;
   isFullCircle: boolean;
+  /** 符号付きスイープ角（度）。負 = clockwise */
+  sweepDegrees: number;
 }
 
 export interface LineSegment {
@@ -25,8 +27,12 @@ export type Segment = ArcSegment | LineSegment;
 
 const CIRCLE_TOLERANCE = 0.02; // mm
 const MIN_ARC_POINTS = 4;
-const MAX_ARC_STEP_RAD = (30 * Math.PI) / 180; // reject polygon edges inscribed in a circle
+const MAX_ARC_STEP_RAD = (30 * Math.PI) / 180;
 const FULL_CIRCLE_THRESHOLD = 2 * Math.PI - 0.05;
+/** これより大きい半径は直線扱い（mm） */
+const ABSURD_RADIUS = 10000;
+/** 円より直線の方が良く当てはまるときの判定倍率 */
+const LINE_VS_CIRCLE_RATIO = 1.25;
 
 function fitCircle3(p1: Point2D, p2: Point2D, p3: Point2D): { center: Point2D; radius: number } | null {
   const d = 2 * (p1.x * (p2.y - p3.y) + p2.x * (p3.y - p1.y) + p3.x * (p1.y - p2.y));
@@ -66,6 +72,78 @@ function unwrapDelta(current: number, previous: number): number {
   return delta;
 }
 
+function distPointToLine(p: Point2D, a: Point2D, b: Point2D): number {
+  const dx = b.x - a.x;
+  const dy = b.y - a.y;
+  const len = Math.hypot(dx, dy);
+  if (len < 1e-12) return Math.hypot(p.x - a.x, p.y - a.y);
+  return Math.abs(dx * (a.y - p.y) - dy * (a.x - p.x)) / len;
+}
+
+function maxDistToLine(points: Point2D[], start: number, end: number): number {
+  const n = points.length;
+  const a = points[start % n];
+  const b = points[(end - 1) % n];
+  let max = 0;
+  for (let k = start; k < end; k++) {
+    max = Math.max(max, distPointToLine(points[k % n], a, b));
+  }
+  return max;
+}
+
+function maxDistToCircle(
+  points: Point2D[],
+  start: number,
+  end: number,
+  circle: { center: Point2D; radius: number }
+): number {
+  const n = points.length;
+  let max = 0;
+  for (let k = start; k < end; k++) {
+    const p = points[k % n];
+    max = Math.max(max, Math.abs(Math.hypot(p.x - circle.center.x, p.y - circle.center.y) - circle.radius));
+  }
+  return max;
+}
+
+/**
+ * ほぼ直線な点列を巨大Rの弧として誤検出しない。
+ * ※ 弧の始点付近だけ見ると sagitta が小さいので、十分な点数／角度で判定する。
+ */
+function prefersLineOverCircle(
+  points: Point2D[],
+  start: number,
+  end: number,
+  circle: { center: Point2D; radius: number },
+  sweepRad: number
+): boolean {
+  if (!Number.isFinite(circle.radius) || circle.radius > ABSURD_RADIUS) return true;
+  const count = end - start;
+  if (count < MIN_ARC_POINTS) return true;
+
+  const lineDev = maxDistToLine(points, start, end);
+  const circleDev = maxDistToCircle(points, start, end, circle);
+
+  // メッシュ公差内で直線なら弧にしない
+  if (lineDev <= CIRCLE_TOLERANCE) return true;
+
+  // スイープが小さいのに直線偏差も小さい = 平坦な巨大R
+  if (Math.abs(sweepRad) < (20 * Math.PI) / 180 && lineDev < Math.max(0.15, circle.radius * 0.01)) {
+    return true;
+  }
+
+  // 直線フィットが円と同程度以上に良い
+  if (lineDev <= circleDev * LINE_VS_CIRCLE_RATIO) return true;
+
+  const n = points.length;
+  const chord = Math.hypot(
+    points[(end - 1) % n].x - points[start % n].x,
+    points[(end - 1) % n].y - points[start % n].y
+  );
+  if (chord > 1e-9 && circle.radius > chord * 10 && lineDev < 0.25) return true;
+  return false;
+}
+
 function collinearWithLine(pStart: Point2D, pEnd: Point2D, p3: Point2D, tolerance: number): boolean {
   const dx = pEnd.x - pStart.x;
   const dy = pEnd.y - pStart.y;
@@ -98,14 +176,11 @@ function findArcEnd(points: Point2D[], start: number, tolerance: number): number
   const p2 = points[(start + 1) % n];
   const p3 = points[(start + 2) % n];
 
-  // Degenerate input (duplicate points) cannot form a circle.
   if (p1 === p2 || p2 === p3) return start + 2;
 
   const circle = fitCircle3(p1, p2, p3);
   if (!circle) return start + 2;
-
-  // Very large radius is effectively a straight line.
-  if (!Number.isFinite(circle.radius) || circle.radius > 10000) return start + 2;
+  if (!Number.isFinite(circle.radius) || circle.radius > ABSURD_RADIUS) return start + 2;
 
   let end = start + 3;
   let prevAngle = angleOf(p3, circle.center);
@@ -155,11 +230,6 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
   const startAngle = angleOf(p1, circle.center);
   const endAngle = angleOf(p3, circle.center);
 
-  const midPoint = points[(start + 1) % n];
-  const midDelta = unwrapDelta(angleOf(midPoint, circle.center), startAngle);
-  const clockwise = midDelta < 0;
-
-  // Compute total angular span by walking through all arc points.
   let accumulated = 0;
   let prev = startAngle;
   for (let k = start + 1; k < end; k++) {
@@ -167,6 +237,11 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
     accumulated += unwrapDelta(angle, prev);
     prev = angle;
   }
+
+  if (prefersLineOverCircle(points, start, end, circle, accumulated)) return null;
+
+  const clockwise = accumulated < 0;
+  const sweepDegrees = (accumulated * 180) / Math.PI;
 
   const isFullCircle =
     Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || end % n === start % n;
@@ -181,6 +256,7 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
     endPoint: p3,
     clockwise,
     isFullCircle,
+    sweepDegrees,
   };
 }
 
@@ -225,4 +301,12 @@ export function detectSegments(loop: [number, number][]): Segment[] {
   }
 
   return segments;
+}
+
+/** DXF ARC は常に CCW。時計回りの弧は角度を入れ替えて同じ軌跡にする */
+export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle: number } {
+  if (seg.clockwise) {
+    return { startAngle: seg.endAngle, endAngle: seg.startAngle };
+  }
+  return { startAngle: seg.startAngle, endAngle: seg.endAngle };
 }

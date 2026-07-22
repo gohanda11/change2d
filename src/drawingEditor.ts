@@ -59,6 +59,10 @@ export class DrawingEditor {
 
   private draggingTextIndex: number | null = null;
   private textDragOffset: Point2 = [0, 0];
+  private draggingDiameterIndex: number | null = null;
+  private diameterDragOffset: Point2 = [0, 0];
+  private diameterDragMoved = false;
+  private diameterPointerDownPos: Point2 | null = null;
 
   constructor(modal: HTMLElement) {
     this.modal = modal;
@@ -95,6 +99,8 @@ export class DrawingEditor {
     this.snapPoint = null;
     this.hoverCircle = null;
     this.draggingTextIndex = null;
+    this.draggingDiameterIndex = null;
+    this.diameterPointerDownPos = null;
     this.hatchCache = [];
     this.hatchBtn.classList.remove('active');
     this.hatchBtn.textContent = '斜線: OFF';
@@ -113,6 +119,8 @@ export class DrawingEditor {
     this.snapPoint = null;
     this.hoverCircle = null;
     this.draggingTextIndex = null;
+    this.draggingDiameterIndex = null;
+    this.diameterPointerDownPos = null;
   }
 
   isOpen(): boolean {
@@ -208,7 +216,8 @@ export class DrawingEditor {
         ? '終点をクリック（角にスナップします）'
         : '始点をクリック（角・端点にスナップ）';
     } else if (this.tool === 'diameter') {
-      this.hintEl.textContent = '円／穴をクリック（中心にスナップして直径寸法）';
+      this.hintEl.textContent =
+        '円／穴で追加 / 直径テキストをクリックで編集・ドラッグで移動';
     } else {
       this.hintEl.textContent = '空クリックで追加 / 既存テキストをドラッグで移動';
     }
@@ -279,6 +288,46 @@ export class DrawingEditor {
   private eventToScreen(e: PointerEvent): Point2 {
     const rect = this.canvas.getBoundingClientRect();
     return [e.clientX - rect.left, e.clientY - rect.top];
+  }
+
+
+  private defaultDiameterLabelPos(dim: DiameterDimension): Point2 {
+    const ux = Math.cos(dim.angle);
+    const uy = Math.sin(dim.angle);
+    const nx = -uy;
+    const ny = ux;
+    const labelOffset = Math.max(dim.radius * 0.2, 1.5);
+    return [
+      dim.center[0] + nx * labelOffset,
+      dim.center[1] + ny * labelOffset,
+    ];
+  }
+
+  private diameterLabelText(dim: DiameterDimension): string {
+    return dim.label ?? `⌀${formatLength(dim.radius * 2)}`;
+  }
+
+  private hitTestDiameterLabel(screen: Point2): number {
+    for (let i = this.annotations.dimensions.length - 1; i >= 0; i--) {
+      const dim = this.annotations.dimensions[i];
+      if (dim.kind !== 'diameter') continue;
+      const pos = dim.labelPosition ?? this.defaultDiameterLabelPos(dim);
+      const p = this.modelToScreen(pos);
+      const label = this.diameterLabelText(dim);
+      this.ctx.font = '12px Inter, system-ui, sans-serif';
+      const width = this.ctx.measureText(label).width;
+      const height = 14;
+      const pad = 8;
+      if (
+        screen[0] >= p[0] - width / 2 - pad &&
+        screen[0] <= p[0] + width / 2 + pad &&
+        screen[1] <= p[1] + pad &&
+        screen[1] >= p[1] - height - pad
+      ) {
+        return i;
+      }
+    }
+    return -1;
   }
 
   private hitTestText(screen: Point2): number {
@@ -362,9 +411,28 @@ export class DrawingEditor {
     }
 
     if (this.tool === 'diameter') {
+      const labelHit = this.hitTestDiameterLabel(screen);
+      if (labelHit >= 0) {
+        const dim = this.annotations.dimensions[labelHit];
+        if (dim.kind === 'diameter') {
+          if (!dim.labelPosition) dim.labelPosition = this.defaultDiameterLabelPos(dim);
+          if (!dim.label) dim.label = this.diameterLabelText(dim);
+          this.draggingDiameterIndex = labelHit;
+          this.diameterDragMoved = false;
+          this.diameterPointerDownPos = rawModel;
+          this.diameterDragOffset = [
+            dim.labelPosition[0] - rawModel[0],
+            dim.labelPosition[1] - rawModel[1],
+          ];
+          this.canvas.style.cursor = 'move';
+          this.updateHint('ドラッグで移動 / クリックでテキスト編集');
+        }
+        return;
+      }
+
       const circle = this.resolveHoverCircle(rawModel);
       if (!circle) {
-        this.updateHint('円が見つかりません。円／穴の近くをクリックしてください');
+        this.updateHint('円／穴、または直径テキストをクリックしてください');
         return;
       }
       const dx = rawModel[0] - circle.center[0];
@@ -375,10 +443,13 @@ export class DrawingEditor {
         center: circle.center,
         radius: circle.radius,
         angle,
+        label: `⌀${formatLength(circle.radius * 2)}`,
       };
+      dim.labelPosition = this.defaultDiameterLabelPos(dim);
       this.annotations.dimensions.push(dim);
-      this.updateHint(`直径 ⌀${formatLength(circle.radius * 2)} を追加しました`);
+      this.updateHint(`直径 ${dim.label} を追加（テキストをドラッグ／クリック編集可）`);
       this.redraw();
+      return;
     }
   }
 
@@ -407,11 +478,35 @@ export class DrawingEditor {
       return;
     }
 
+    if (this.draggingDiameterIndex !== null) {
+      const dim = this.annotations.dimensions[this.draggingDiameterIndex];
+      if (dim.kind === 'diameter') {
+        if (
+          this.diameterPointerDownPos &&
+          Math.hypot(
+            rawModel[0] - this.diameterPointerDownPos[0],
+            rawModel[1] - this.diameterPointerDownPos[1]
+          ) > 0.15
+        ) {
+          this.diameterDragMoved = true;
+        }
+        dim.labelPosition = [
+          rawModel[0] + this.diameterDragOffset[0],
+          rawModel[1] + this.diameterDragOffset[1],
+        ];
+        this.redraw();
+      }
+      return;
+    }
+
     this.hoverPoint = this.resolveSnap(rawModel);
     this.resolveHoverCircle(rawModel);
 
     if (this.tool === 'text') {
       this.canvas.style.cursor = this.hitTestText(screen) >= 0 ? 'move' : 'crosshair';
+    } else if (this.tool === 'diameter') {
+      this.canvas.style.cursor =
+        this.hitTestDiameterLabel(screen) >= 0 ? 'move' : 'crosshair';
     }
 
     if (
@@ -431,6 +526,25 @@ export class DrawingEditor {
     if (this.draggingTextIndex !== null) {
       this.draggingTextIndex = null;
       this.canvas.style.cursor = 'crosshair';
+      this.updateHint();
+    }
+    if (this.draggingDiameterIndex !== null) {
+      const idx = this.draggingDiameterIndex;
+      const moved = this.diameterDragMoved;
+      this.draggingDiameterIndex = null;
+      this.diameterPointerDownPos = null;
+      this.canvas.style.cursor = 'crosshair';
+      if (!moved) {
+        const dim = this.annotations.dimensions[idx];
+        if (dim.kind === 'diameter') {
+          const current = this.diameterLabelText(dim);
+          const next = window.prompt('直径テキストを編集', current);
+          if (next !== null && next.trim()) {
+            dim.label = next.trim();
+            this.redraw();
+          }
+        }
+      }
       this.updateHint();
     }
     try {
@@ -658,16 +772,11 @@ export class DrawingEditor {
     this.drawTick(s2, ux, uy, 6);
     this.drawCross(sc, 5, preview ? '#38bdf8' : '#fbbf24');
 
-    const nx = -uy;
-    const ny = ux;
-    const labelPos = this.modelToScreen([
-      center[0] + nx * Math.max(radius * 0.2, 1.5),
-      center[1] + ny * Math.max(radius * 0.2, 1.5),
-    ]);
+    const labelPos = this.modelToScreen(dim.labelPosition ?? this.defaultDiameterLabelPos(dim));
     this.ctx.font = '12px Inter, system-ui, sans-serif';
     this.ctx.textAlign = 'center';
     this.ctx.textBaseline = 'bottom';
-    this.ctx.fillText(`⌀${formatLength(radius * 2)}`, labelPos[0], labelPos[1] - 2);
+    this.ctx.fillText(this.diameterLabelText(dim), labelPos[0], labelPos[1] - 2);
   }
 
   private drawTick(center: Point2, ux: number, uy: number, size: number): void {

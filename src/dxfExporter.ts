@@ -1,5 +1,5 @@
 import Drawing from 'dxf-writer';
-import { detectSegments } from './arcDetector';
+import { detectSegments, toDxfArcAngles } from './arcDetector';
 import { boundingBox, formatLength, type Point2 } from './geometry2d';
 import { generateHatchLines } from './hatch';
 import type {
@@ -68,9 +68,7 @@ function drawLoops(d: Drawing, loops: Point2[][]): void {
         if (seg.isFullCircle) {
           d.drawCircle(seg.center.x, seg.center.y, seg.radius);
         } else {
-          const [startAngle, endAngle] = seg.clockwise
-            ? [seg.endAngle, seg.startAngle]
-            : [seg.startAngle, seg.endAngle];
+          const { startAngle, endAngle } = toDxfArcAngles(seg);
           d.drawArc(seg.center.x, seg.center.y, seg.radius, startAngle, endAngle);
         }
       } else {
@@ -142,13 +140,12 @@ function drawDiameterEnt(d: Drawing, dim: DiameterDimension): void {
   d.drawLine(center[0] - mark, center[1], center[0] + mark, center[1]);
   d.drawLine(center[0], center[1] - mark, center[0], center[1] + mark);
 
-  const label = `⌀${formatLength(radius * 2)}`;
+  const label = dim.label ?? `⌀${formatLength(radius * 2)}`;
   const height = Math.max(radius * 0.25, 1.2);
   const labelOffset = Math.max(radius * 0.2, 1.5);
-  const lx = center[0] + nx * labelOffset;
-  const ly = center[1] + ny * labelOffset;
-  const angleDeg = (angle * 180) / Math.PI;
-  d.drawText(lx, ly, height, angleDeg, label, 'center', 'bottom');
+  const defaultPos = [center[0] + nx * labelOffset, center[1] + ny * labelOffset] as [number, number];
+  const lp = dim.labelPosition ?? defaultPos;
+  d.drawText(lp[0], lp[1], height, 0, label, 'center', 'bottom');
 }
 
 function drawTextAnnotation(

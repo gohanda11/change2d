@@ -14,6 +14,10 @@ export interface DiameterDimension {
   radius: number;
   /** 直径線の角度（ラジアン） */
   angle: number;
+  /** 表示テキスト（未設定時は ⌀直径） */
+  label?: string;
+  /** テキスト位置（モデル座標）。未設定時は直径線付近 */
+  labelPosition?: Point2;
 }
 
 export type DimensionAnnotation = LinearDimension | DiameterDimension;

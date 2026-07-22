@@ -307,13 +307,14 @@ function drawDiameter(doc: jsPDF, dim: DiameterDimension, t: PdfTransform): void
   line(doc, [center[0] - mark, center[1]], [center[0] + mark, center[1]], t);
   line(doc, [center[0], center[1] - mark], [center[0], center[1] + mark], t);
 
-  // Ø is Latin-1; ⌀ often missing in standard PDF fonts
-  const label = `Ø${formatLength(radius * 2)}`;
+  const label = dim.label ?? `⌀${formatLength(radius * 2)}`;
   const height = Math.max(radius * 0.25, 1.2);
   const labelOffset = Math.max(radius * 0.2, 1.5);
-  const lp: Point2 = [center[0] + nx * labelOffset, center[1] + ny * labelOffset];
-  const angleDeg = (angle * 180) / Math.PI;
-  drawModelText(doc, label, lp, height, angleDeg, 'center', 'bottom', t);
+  const lp: Point2 = dim.labelPosition ?? [
+    center[0] + nx * labelOffset,
+    center[1] + ny * labelOffset,
+  ];
+  drawModelText(doc, label, lp, height, 0, 'center', 'bottom', t);
 }
 
 function drawTextAnnotation(

@@ -39,4 +39,20 @@ describe('dxfExporter annotations', () => {
     expect(dxf).toContain('DIMENSION');
     expect(dxf).toContain('⌀4');
   });
+
+  it('exports custom diameter label text and position', () => {
+    const dxf = generateAnnotatedDxf([square], {
+      hatchEnabled: false,
+      dimensions: [{
+        kind: 'diameter',
+        center: [5, 5],
+        radius: 2,
+        angle: 0,
+        label: 'CUSTOM_DIA',
+        labelPosition: [8, 9],
+      }],
+      texts: [],
+    });
+    expect(dxf).toContain('CUSTOM_DIA');
+  });
 });
