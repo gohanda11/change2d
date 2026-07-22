@@ -226,4 +226,45 @@ describe('detectSegments', () => {
     expect(sweep).toBeCloseTo(90, 5);
   });
 
+
+  it('rejects partial arcs larger than 180deg (notch mis-fit)', () => {
+    // chord=7, r≈3.61 → long way ≈208°, short way ≈152°
+    // Keyboard cutout notches must not become the long arc.
+    const cx = 0;
+    const cy = 0.875;
+    const r = 3.6077;
+    const a0 = (14.04 * Math.PI) / 180;
+    const a1 = a0 - (208.07 * Math.PI) / 180; // clockwise long sweep
+    const loop: [number, number][] = [];
+    loop.push([-10, r * Math.sin(a0) + cy]);
+    for (let i = 0; i <= 24; i++) {
+      const a = a0 + ((a1 - a0) * i) / 24;
+      loop.push([cx + r * Math.cos(a), cy + r * Math.sin(a)]);
+    }
+    loop.push([-10, r * Math.sin(a1) + cy]);
+    loop.push([-10, 10]);
+    loop.push([10, 10]);
+    loop.push([10, r * Math.sin(a0) + cy]);
+
+    const arcs = detectSegments(loop).filter((s) => s.type === 'arc');
+    const long = arcs.filter((s) => s.type === 'arc' && Math.abs(s.sweepDegrees) > 180);
+    expect(long.length).toBe(0);
+  });
+
+
+  it('rejects wide partial arcs over 100deg', () => {
+    const r = 3.6;
+    const sweep = (120 * Math.PI) / 180;
+    const pts: [number, number][] = [];
+    for (let i = 0; i <= 20; i++) {
+      const a = -Math.PI / 2 + (sweep * i) / 20;
+      pts.push([r * Math.cos(a), r * Math.sin(a)]);
+    }
+    pts.push([-2, -2], [2, -2]);
+    const wide = detectSegments(pts).filter(
+      (s) => s.type === 'arc' && !s.isFullCircle && Math.abs(s.sweepDegrees) > 100
+    );
+    expect(wide.length).toBe(0);
+  });
+
 });

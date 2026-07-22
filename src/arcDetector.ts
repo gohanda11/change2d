@@ -33,7 +33,9 @@ const FULL_CIRCLE_THRESHOLD = 2 * Math.PI - 0.05;
 /** これより大きい半径は直線扱い（mm） */
 const ABSURD_RADIUS = 10000;
 /** 部分円弧（フィレット等）として許す最大半径。これ超は直線近似 */
-const MAX_PARTIAL_ARC_RADIUS = 12;
+const MAX_PARTIAL_ARC_RADIUS = 3; // 外形フィレットは通常 ≤2mm。切り欠き誤検出の R≈3.6 を排除
+/** 部分円弧の最大スイープ角（度）。これ超は切り欠きの誤検出 */
+const MAX_PARTIAL_ARC_SWEEP_DEG = 100; // キープレートのフィレットはほぼ ≤90°
 /** 弦長に対する半径の上限倍率（ゆるい巨大Rを落とす） */
 const MAX_RADIUS_TO_CHORD = 2.5;
 /** 円より直線の方が良く当てはまるときの判定倍率 */
@@ -191,6 +193,11 @@ function linePreferenceReason(
   // 平坦すぎる弧（小さなスイープ）
   if (absSweep < (35 * Math.PI) / 180) {
     return `sweep_too_small(${((absSweep * 180) / Math.PI).toFixed(1)}deg)`;
+  }
+
+  // 半円を超える部分弧は切り欠きを大回りする誤検出
+  if ((absSweep * 180) / Math.PI > MAX_PARTIAL_ARC_SWEEP_DEG + 1e-6) {
+    return `sweep_too_large(${((absSweep * 180) / Math.PI).toFixed(1)}deg)`;
   }
 
   // 弦に対してRが大きすぎる = ゆるい円弧の誤検出
@@ -393,31 +400,79 @@ export function detectSegments(loop: [number, number][]): Segment[] {
       const arc = fitArc(points, i, arcEnd);
       if (arc) {
         segments.push(arc);
+        if (isDxfDebugEnabled()) {
+          // already logged in fitArc
+        }
         if (arc.isFullCircle) break;
         edgesConsumed += arcCount - 1;
         i = (arcEnd - 1) % n;
         continue;
       }
+
+      // 円弧候補を棄却した場合、同じ区間を直後に再円弧化しない。
+      // 区間を折線（直線マージ）として確定して進める。
+      let cursor = i;
+      while (cursor < arcEnd - 1 && edgesConsumed < n) {
+        const lineEnd = Math.min(findLineEnd(points, cursor, CIRCLE_TOLERANCE), arcEnd);
+        const lineCount = Math.max(2, lineEnd - cursor);
+        const endIdx = cursor + lineCount - 1;
+        segments.push({
+          type: 'line',
+          start: points[cursor % n],
+          end: points[endIdx % n],
+        });
+        if (isDxfDebugEnabled()) {
+          const a = points[cursor % n];
+          const b = points[endIdx % n];
+          dxfLog('accept line', {
+            len: Number(Math.hypot(b.x - a.x, b.y - a.y).toFixed(4)),
+            from: [Number(a.x.toFixed(3)), Number(a.y.toFixed(3))],
+            to: [Number(b.x.toFixed(3)), Number(b.y.toFixed(3))],
+            points: lineCount,
+            triedArcPoints: arcCount,
+          });
+        }
+        edgesConsumed += lineCount - 1;
+        cursor = endIdx;
+        if (lineCount <= 2 && endIdx < arcEnd - 1) {
+          // 1辺だけ進めた場合もカーソル更新済み
+        }
+        if (cursor >= arcEnd - 1) break;
+      }
+      const advancedTo = (arcEnd - 1) % n;
+      if (advancedTo === i) {
+        // ほぼ一周の棄却で進まない場合は1辺強制消費
+        segments.push({
+          type: 'line',
+          start: points[i % n],
+          end: points[(i + 1) % n],
+        });
+        edgesConsumed += 1;
+        i = (i + 1) % n;
+      } else {
+        i = advancedTo;
+      }
+      continue;
     }
 
     const lineEnd = findLineEnd(points, i, CIRCLE_TOLERANCE);
     const lineCount = lineEnd - i;
-    const lineSeg = {
-      type: 'line' as const,
+    segments.push({
+      type: 'line',
       start: points[i % n],
       end: points[(lineEnd - 1) % n],
-    };
+    });
     if (isDxfDebugEnabled()) {
-      const len = Math.hypot(lineSeg.end.x - lineSeg.start.x, lineSeg.end.y - lineSeg.start.y);
+      const a = points[i % n];
+      const b = points[(lineEnd - 1) % n];
       dxfLog('accept line', {
-        len: Number(len.toFixed(4)),
-        from: [Number(lineSeg.start.x.toFixed(3)), Number(lineSeg.start.y.toFixed(3))],
-        to: [Number(lineSeg.end.x.toFixed(3)), Number(lineSeg.end.y.toFixed(3))],
+        len: Number(Math.hypot(b.x - a.x, b.y - a.y).toFixed(4)),
+        from: [Number(a.x.toFixed(3)), Number(a.y.toFixed(3))],
+        to: [Number(b.x.toFixed(3)), Number(b.y.toFixed(3))],
         points: lineCount,
-        triedArcPoints: arcCount >= MIN_ARC_POINTS ? arcCount : 0,
+        triedArcPoints: 0,
       });
     }
-    segments.push(lineSeg);
     edgesConsumed += lineCount - 1;
     i = (lineEnd - 1) % n;
   }
@@ -450,7 +505,12 @@ export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle:
   const start = normalizeDeg(seg.startAngle);
   const end = normalizeDeg(seg.endAngle);
   const mid = normalizeDeg(seg.startAngle + seg.sweepDegrees / 2);
-  const absSweep = Math.min(Math.abs(seg.sweepDegrees), 360);
+  let absSweep = Math.min(Math.abs(seg.sweepDegrees), 360);
+
+  // 部分円弧で 180°超なら、相補の短弧側を使う（長弧の見た目崩れ防止）
+  if (!seg.isFullCircle && absSweep > 180) {
+    absSweep = 360 - absSweep;
+  }
 
   const direct = { startAngle: start, endAngle: end };
   const swapped = { startAngle: end, endAngle: start };
@@ -458,8 +518,7 @@ export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle:
   const score = (c: { startAngle: number; endAngle: number }): number => {
     const sw = ccwSweepDeg(c.startAngle, c.endAngle);
     let s = Math.abs(sw - absSweep);
-    if (!angleOnCcwArc(c.startAngle, c.endAngle, mid)) s += 1000;
-    // モデルが短弧（<=180）なのに DXF が長弧になる候補は大きく減点
+    if (!angleOnCcwArc(c.startAngle, c.endAngle, mid) && absSweep <= 180) s += 1000;
     if (absSweep <= 180 && sw > 180) s += 500;
     return s;
   };
@@ -467,21 +526,18 @@ export function toDxfArcAngles(seg: ArcSegment): { startAngle: number; endAngle:
   let best = score(direct) <= score(swapped) ? direct : swapped;
   let sw = ccwSweepDeg(best.startAngle, best.endAngle);
 
-  // 最終安全策: モデル短弧なのに長弧なら反転して短弧化
+  // 最終安全策: 目標が短弧なのに長弧なら反転
   if (absSweep <= 180 + 1e-6 && sw > 180) {
     best = { startAngle: best.endAngle, endAngle: best.startAngle };
     sw = ccwSweepDeg(best.startAngle, best.endAngle);
   }
 
-  // それでも長弧なら、開始角から |sweep| だけ CCW で組む
-  if (absSweep <= 180 + 1e-6 && sw > 180) {
-    if (seg.clockwise) {
-      // CW start→end の短弧 = CCW end→start
-      return { startAngle: end, endAngle: start };
-    }
-    return {
-      startAngle: start,
-      endAngle: normalizeDeg(start + absSweep),
+  // それでも合わない場合は開始角から |sweep| だけ CCW
+  if (Math.abs(sw - absSweep) > 1 && absSweep <= 180 + 1e-6) {
+    const from = seg.clockwise ? end : start;
+    best = {
+      startAngle: from,
+      endAngle: normalizeDeg(from + absSweep),
     };
   }
 

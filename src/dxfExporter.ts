@@ -115,8 +115,8 @@ function drawLoops(d: Drawing, loops: Point2[][]): void {
             x2: Number(seg.endPoint.x.toFixed(3)),
             y2: Number(seg.endPoint.y.toFixed(3)),
           });
-          if (dxfSweep > 180.5 && Math.abs(seg.sweepDegrees) <= 180.5) {
-            dxfWarn('LONG DXF ARC (should be short)', {
+          if (dxfSweep > 180.5) {
+            dxfWarn('LONG DXF ARC written', {
               loop: loopIndex,
               r: Number(seg.radius.toFixed(4)),
               sweepModel: Number(seg.sweepDegrees.toFixed(2)),
