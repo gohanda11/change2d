@@ -1,5 +1,6 @@
 import Drawing from 'dxf-writer';
 import { detectSegments, toDxfArcAngles } from './arcDetector';
+import { dxfGroup, dxfGroupEnd, dxfLog, dxfTable, dxfWarn } from './dxfDebug';
 import { boundingBox, formatLength, type Point2 } from './geometry2d';
 import { generateHatchLines } from './hatch';
 import type {
@@ -60,22 +61,92 @@ export function generateAnnotatedDxf(
 }
 
 function drawLoops(d: Drawing, loops: Point2[][]): void {
-  for (const loop of loops) {
-    if (loop.length < 2) continue;
+  dxfGroup('[DXF] outline: loops → LINE/ARC/CIRCLE');
+  dxfLog('input loops', loops.length, 'pointCounts=', loops.map((l) => l.length));
+
+  let totalLines = 0;
+  let totalArcs = 0;
+  let totalCircles = 0;
+  const summaryRows: Record<string, unknown>[] = [];
+
+  loops.forEach((loop, loopIndex) => {
+    if (loop.length < 2) return;
+    dxfGroup(`loop[${loopIndex}] points=${loop.length}`);
     const segments = detectSegments(loop);
-    for (const seg of segments) {
+    dxfLog('segment count', segments.length);
+
+    segments.forEach((seg, segIndex) => {
       if (seg.type === 'arc') {
         if (seg.isFullCircle) {
+          totalCircles += 1;
           d.drawCircle(seg.center.x, seg.center.y, seg.radius);
+          summaryRows.push({
+            loop: loopIndex,
+            i: segIndex,
+            entity: 'CIRCLE',
+            r: Number(seg.radius.toFixed(4)),
+            sweep: Number(seg.sweepDegrees.toFixed(2)),
+            cx: Number(seg.center.x.toFixed(3)),
+            cy: Number(seg.center.y.toFixed(3)),
+            x1: Number(seg.startPoint.x.toFixed(3)),
+            y1: Number(seg.startPoint.y.toFixed(3)),
+            x2: Number(seg.endPoint.x.toFixed(3)),
+            y2: Number(seg.endPoint.y.toFixed(3)),
+          });
         } else {
+          totalArcs += 1;
           const { startAngle, endAngle } = toDxfArcAngles(seg);
+          const dxfSweep = ((endAngle - startAngle) + 360) % 360 || 360;
           d.drawArc(seg.center.x, seg.center.y, seg.radius, startAngle, endAngle);
+          summaryRows.push({
+            loop: loopIndex,
+            i: segIndex,
+            entity: 'ARC',
+            r: Number(seg.radius.toFixed(4)),
+            sweepModel: Number(seg.sweepDegrees.toFixed(2)),
+            sweepDxf: Number(dxfSweep.toFixed(2)),
+            sa: Number(startAngle.toFixed(2)),
+            ea: Number(endAngle.toFixed(2)),
+            cw: seg.clockwise,
+            cx: Number(seg.center.x.toFixed(3)),
+            cy: Number(seg.center.y.toFixed(3)),
+            x1: Number(seg.startPoint.x.toFixed(3)),
+            y1: Number(seg.startPoint.y.toFixed(3)),
+            x2: Number(seg.endPoint.x.toFixed(3)),
+            y2: Number(seg.endPoint.y.toFixed(3)),
+          });
+          if (seg.radius > 5 && Math.abs(seg.sweepDegrees) > 60) {
+            dxfWarn('suspicious ARC written', {
+              loop: loopIndex,
+              r: seg.radius,
+              sweepModel: seg.sweepDegrees,
+              sweepDxf: dxfSweep,
+              center: seg.center,
+            });
+          }
         }
       } else {
+        totalLines += 1;
         d.drawLine(seg.start.x, seg.start.y, seg.end.x, seg.end.y);
+        const len = Math.hypot(seg.end.x - seg.start.x, seg.end.y - seg.start.y);
+        summaryRows.push({
+          loop: loopIndex,
+          i: segIndex,
+          entity: 'LINE',
+          len: Number(len.toFixed(4)),
+          x1: Number(seg.start.x.toFixed(3)),
+          y1: Number(seg.start.y.toFixed(3)),
+          x2: Number(seg.end.x.toFixed(3)),
+          y2: Number(seg.end.y.toFixed(3)),
+        });
       }
-    }
-  }
+    });
+    dxfGroupEnd();
+  });
+
+  dxfLog('summary', { lines: totalLines, arcs: totalArcs, circles: totalCircles });
+  dxfTable(summaryRows);
+  dxfGroupEnd();
 }
 
 function drawDimensionEnt(d: Drawing, dim: DimensionAnnotation): void {

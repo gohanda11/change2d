@@ -1,3 +1,4 @@
+import { dxfLog, dxfWarn, isDxfDebugEnabled } from './dxfDebug';
 interface Point2D {
   x: number;
   y: number;
@@ -114,16 +115,19 @@ function maxDistToCircle(
  * ほぼ直線／直角の角を巨大Rの弧として誤検出しない。
  * キーボードプレートでは部分円弧のRは小さい（フィレット程度）想定。
  */
-function prefersLineOverCircle(
+/** null = 円弧として残す / string = 直線扱いする理由 */
+function linePreferenceReason(
   points: Point2D[],
   start: number,
   end: number,
   circle: { center: Point2D; radius: number },
   sweepRad: number
-): boolean {
-  if (!Number.isFinite(circle.radius) || circle.radius > ABSURD_RADIUS) return true;
+): string | null {
+  if (!Number.isFinite(circle.radius) || circle.radius > ABSURD_RADIUS) {
+    return 'absurd_or_nonfinite_radius';
+  }
   const count = end - start;
-  if (count < MIN_ARC_POINTS) return true;
+  if (count < MIN_ARC_POINTS) return 'too_few_points';
 
   const absSweep = Math.abs(sweepRad);
   const n = points.length;
@@ -134,28 +138,38 @@ function prefersLineOverCircle(
   const circleDev = maxDistToCircle(points, start, end, circle);
 
   // メッシュ公差〜ノイズ程度なら直線
-  if (lineDev <= Math.max(CIRCLE_TOLERANCE * 3, 0.05)) return true;
+  if (lineDev <= Math.max(CIRCLE_TOLERANCE * 3, 0.05)) {
+    return `lineDev_small(${lineDev.toFixed(4)})`;
+  }
 
   // フル円以外で大きすぎるRは直線群へ（角の誤検出防止）
-  if (circle.radius > MAX_PARTIAL_ARC_RADIUS) return true;
+  if (circle.radius > MAX_PARTIAL_ARC_RADIUS) {
+    return `radius>${MAX_PARTIAL_ARC_RADIUS}(${circle.radius.toFixed(3)})`;
+  }
 
   // 平坦すぎる弧（小さなスイープ）
-  if (absSweep < (35 * Math.PI) / 180) return true;
+  if (absSweep < (35 * Math.PI) / 180) {
+    return `sweep_too_small(${((absSweep * 180) / Math.PI).toFixed(1)}deg)`;
+  }
 
   // 弦に対してRが大きすぎる = ゆるい円弧の誤検出
-  if (chord > 1e-9 && circle.radius > chord * MAX_RADIUS_TO_CHORD) return true;
+  if (chord > 1e-9 && circle.radius > chord * MAX_RADIUS_TO_CHORD) {
+    return `radius/chord>${MAX_RADIUS_TO_CHORD}(R=${circle.radius.toFixed(3)},chord=${chord.toFixed(3)})`;
+  }
 
   // 直線フィットが円と同程度以上に良い
-  if (lineDev <= circleDev * LINE_VS_CIRCLE_RATIO) return true;
+  if (lineDev <= circleDev * LINE_VS_CIRCLE_RATIO) {
+    return `line_fit_better(lineDev=${lineDev.toFixed(4)},circleDev=${circleDev.toFixed(4)})`;
+  }
 
   // サジッタが小さすぎる（目視では直線）
   const sagitta =
     circle.radius > 1e-9
       ? circle.radius * (1 - Math.cos(Math.min(absSweep, Math.PI) / 2))
       : 0;
-  if (sagitta < 0.08) return true;
+  if (sagitta < 0.08) return `sagitta_small(${sagitta.toFixed(4)})`;
 
-  return false;
+  return null;
 }
 
 function collinearWithLine(pStart: Point2D, pEnd: Point2D, p3: Point2D, tolerance: number): boolean {
@@ -257,15 +271,29 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
   const isFullCircle =
     Math.abs(accumulated) >= FULL_CIRCLE_THRESHOLD || end % n === start % n;
 
+  const sweepDegrees = (accumulated * 180) / Math.PI;
+  const clockwise = accumulated < 0;
+
   // フル円（穴など）は大きなRでも残す。部分弧だけ厳しく落とす。
-  if (!isFullCircle && prefersLineOverCircle(points, start, end, circle, accumulated)) {
-    return null;
+  if (!isFullCircle) {
+    const rejectReason = linePreferenceReason(points, start, end, circle, accumulated);
+    if (rejectReason) {
+      if (isDxfDebugEnabled()) {
+        dxfLog('reject arc → line', {
+          reason: rejectReason,
+          points: count,
+          r: Number(circle.radius.toFixed(4)),
+          sweepDeg: Number(sweepDegrees.toFixed(2)),
+          from: [Number(p1.x.toFixed(3)), Number(p1.y.toFixed(3))],
+          to: [Number(p3.x.toFixed(3)), Number(p3.y.toFixed(3))],
+          center: [Number(circle.center.x.toFixed(3)), Number(circle.center.y.toFixed(3))],
+        });
+      }
+      return null;
+    }
   }
 
-  const clockwise = accumulated < 0;
-  const sweepDegrees = (accumulated * 180) / Math.PI;
-
-  return {
+  const arc: ArcSegment = {
     type: 'arc',
     center: circle.center,
     radius: circle.radius,
@@ -277,6 +305,29 @@ function fitArc(points: Point2D[], start: number, end: number): ArcSegment | nul
     isFullCircle,
     sweepDegrees,
   };
+
+  if (isDxfDebugEnabled()) {
+    const suspicious = !isFullCircle && Math.abs(sweepDegrees) > 60 && circle.radius > 5;
+    const payload = {
+      kind: isFullCircle ? 'CIRCLE' : 'ARC',
+      r: Number(circle.radius.toFixed(4)),
+      sweepDeg: Number(sweepDegrees.toFixed(2)),
+      clockwise,
+      from: [Number(p1.x.toFixed(3)), Number(p1.y.toFixed(3))],
+      to: [Number(p3.x.toFixed(3)), Number(p3.y.toFixed(3))],
+      center: [Number(circle.center.x.toFixed(3)), Number(circle.center.y.toFixed(3))],
+      startAngle: Number(arc.startAngle.toFixed(2)),
+      endAngle: Number(arc.endAngle.toFixed(2)),
+      points: count,
+    };
+    if (suspicious) {
+      dxfWarn('accept suspicious arc (large R + wide sweep)', payload);
+    } else {
+      dxfLog('accept arc', payload);
+    }
+  }
+
+  return arc;
 }
 
 export function detectSegments(loop: [number, number][]): Segment[] {
@@ -310,11 +361,22 @@ export function detectSegments(loop: [number, number][]): Segment[] {
 
     const lineEnd = findLineEnd(points, i, CIRCLE_TOLERANCE);
     const lineCount = lineEnd - i;
-    segments.push({
-      type: 'line',
+    const lineSeg = {
+      type: 'line' as const,
       start: points[i % n],
       end: points[(lineEnd - 1) % n],
-    });
+    };
+    if (isDxfDebugEnabled()) {
+      const len = Math.hypot(lineSeg.end.x - lineSeg.start.x, lineSeg.end.y - lineSeg.start.y);
+      dxfLog('accept line', {
+        len: Number(len.toFixed(4)),
+        from: [Number(lineSeg.start.x.toFixed(3)), Number(lineSeg.start.y.toFixed(3))],
+        to: [Number(lineSeg.end.x.toFixed(3)), Number(lineSeg.end.y.toFixed(3))],
+        points: lineCount,
+        triedArcPoints: arcCount >= MIN_ARC_POINTS ? arcCount : 0,
+      });
+    }
+    segments.push(lineSeg);
     edgesConsumed += lineCount - 1;
     i = (lineEnd - 1) % n;
   }

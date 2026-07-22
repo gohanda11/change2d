@@ -2,6 +2,7 @@ import type { OcctResult, SelectedFace } from './types';
 import { loadStepFile } from './stepLoader';
 import { extractFaceLoops2D } from './silhouette';
 import { generateDxf, downloadDxf } from './dxfExporter';
+import { setDxfDebug, dxfGroup, dxfGroupEnd, dxfLog } from './dxfDebug';
 import { Viewer } from './viewer';
 import { DrawingEditor } from './drawingEditor';
 
@@ -72,8 +73,22 @@ export class App {
     const mesh = this.result.meshes[this.selectedFace.meshIndex];
     const face = mesh.brep_faces[this.selectedFace.faceIndex];
 
+    setDxfDebug(true);
+    dxfGroup('[DXF] exportSelectedFace');
     try {
-      const { loops } = extractFaceLoops2D(mesh, face);
+      dxfLog('file', this.currentFileName);
+      dxfLog('selection', {
+        meshIndex: this.selectedFace.meshIndex,
+        faceIndex: this.selectedFace.faceIndex,
+        triangles: face.last - face.first + 1,
+      });
+
+      const { loops, normal } = extractFaceLoops2D(mesh, face);
+      dxfLog('extracted loops', {
+        count: loops.length,
+        pointCounts: loops.map((l) => l.length),
+        normal,
+      });
       if (loops.length === 0) {
         this.setStatus('選択された面から輪郭を抽出できませんでした');
         return;
@@ -81,10 +96,15 @@ export class App {
       const dxf = generateDxf(loops);
       const baseName = this.getBaseName();
       downloadDxf(dxf, `${baseName}.dxf`);
-      this.setStatus('DXF をダウンロードしました');
+      dxfLog('download', `${baseName}.dxf`, 'bytes=', dxf.length);
+      this.setStatus('DXF をダウンロードしました（コンソールにデバッグログあり）');
     } catch (err) {
       const message = err instanceof Error ? err.message : '不明なエラー';
+      console.error('[DXF] export error', err);
       this.setStatus(`DXF 出力エラー: ${message}`);
+    } finally {
+      dxfGroupEnd();
+      setDxfDebug(false);
     }
   }
 
